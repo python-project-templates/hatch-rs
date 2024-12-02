@@ -1,0 +1,10 @@
+# Changes here will be overwritten by Copier
+_commit: 81e8acd
+_src_path: https://github.com/python-project-templates/base.git
+add_extension: python
+email: t.paine154@gmail.com
+github: python-project-templates
+project_description: Hatch plugin for Rust builds
+project_name: hatch rs
+python_version_primary: '3.11'
+team: the hatch-rs authors
