@@ -66,7 +66,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
         if not self.target:
             if platform == "win32":
-                if machine == "x86_64":
+                if machine in ("x86_64", "AMD64"):
                     self.target = "x86_64-pc-windows-msvc"
                 elif machine == "i686":
                     self.target = "i686-pc-windows-msvc"
