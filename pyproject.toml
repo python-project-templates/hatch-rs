@@ -46,7 +46,11 @@ develop = [
     "wheel",
 ]
 
-[project.scripts]
+[project.entry-points.hatch]
+rs = "hatch_rs.hooks"
+
+# [project.scripts]
+# hatch-rs = "hatch_rs.cli:main"
 
 [project.urls]
 Repository = "https://github.com/python-project-templates/hatch-rs"
@@ -75,7 +79,7 @@ ignore = [
 ]
 
 [tool.coverage.run]
-branch = true
+branch = false
 omit = [
     "hatch_rs/tests/integration/",
 ]
