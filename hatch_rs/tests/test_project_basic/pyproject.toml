@@ -3,8 +3,8 @@ requires = ["hatchling>=1.20"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hatch-rs-test-project-basic"
-description = "Basic test project for hatch-rs"
+name = "hatch-cpp-test-project-basic"
+description = "Basic test project for hatch-cpp"
 version = "0.1.0"
 requires-python = ">=3.9"
 dependencies = [
@@ -14,47 +14,21 @@ dependencies = [
 
 [tool.hatch.build]
 artifacts = [
-    "*.so",
-    "*.dll",
-    "*.dylib",
+    "project/*.dll",
+    "project/*.dylib",
+    "project/*.so",
 ]
 
 [tool.hatch.build.sources]
 src = "/"
 
 [tool.hatch.build.targets.sdist]
-include = [
-    "/basic_project",
-]
-exclude = []
+packages = ["project"]
 
 [tool.hatch.build.targets.wheel]
-include = [
-    "/basic_project",
-]
-exclude = [
-    "/pyproject.toml",
-]
-
-[tool.hatch.build.targets.wheel.shared-data]
+packages = ["project"]
 
 [tool.hatch.build.hooks.hatch-rs]
-toolchain = "cargo"
-libraries = [
-    "/basic_project/extension.so",
-]
-skip-if-exists = [
-
-]
-dependencies = [
-    "hatch-rs",
-]
-
-
-[tool.hatch.build.hooks.hatch-rs.build-kwargs]
-path = "rs"
-build_cmd = "build"
-
-[tool.pytest.ini_options]
-asyncio_mode = "strict"
-testpaths = "basic_project/tests"
+verbose = true
+path = "."
+module = "project"
