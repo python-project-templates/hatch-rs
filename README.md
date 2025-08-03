@@ -9,6 +9,7 @@ Hatch plugin for Rust builds
 
 ## Overview
 
+<<<<<<< before updating
 A simple, extensible Rust build plugin for [hatch](https://hatch.pypa.io/latest/).
 
 ```toml
@@ -18,5 +19,7 @@ path = "."
 module = "project"
 ```
 
+=======
+>>>>>>> after updating
 > [!NOTE]
 > This library was generated using [copier](https://copier.readthedocs.io/en/stable/) from the [Base Python Project Template repository](https://github.com/python-project-templates/base).
