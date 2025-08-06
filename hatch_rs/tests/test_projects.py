@@ -35,9 +35,9 @@ class TestProject:
 
         # assert built
         if platform == "win32":
-            assert "project.pyd" in listdir(f"hatch_rs/tests/{project_folder}/project")
+            assert "project.abi3.pyd" in listdir(f"hatch_rs/tests/{project_folder}/project")
         else:
-            assert "project.so" in listdir(f"hatch_rs/tests/{project_folder}/project")
+            assert "project.abi3.so" in listdir(f"hatch_rs/tests/{project_folder}/project")
 
         # dist
         check_call(
@@ -51,7 +51,7 @@ class TestProject:
             cwd=f"hatch_rs/tests/{project_folder}",
         )
 
-        assert f"cp3{version_info.minor}-cp3{version_info.minor}" in listdir(f"hatch_rs/tests/{project_folder}/dist")[0]
+        assert f"cp3{version_info.minor}-abi3" in listdir(f"hatch_rs/tests/{project_folder}/dist")[0]
 
         # import
         here = Path(__file__).parent / project_folder

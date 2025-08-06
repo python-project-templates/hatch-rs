@@ -98,7 +98,10 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
             os_name = "linux"
         else:
             os_name = "win"
-        build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
+        if config.abi3:
+            build_data["tag"] = f"cp{version_major}{version_minor}-abi3-{os_name}_{machine}"
+        else:
+            build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
 
         # force include libraries
         for path in Path(".").rglob("*"):
