@@ -30,6 +30,11 @@ class HatchRustBuildConfig(BaseModel):
     module: str = Field(description="Python module name for the Rust extension.")
     path: Optional[Path] = Field(default=None, description="Path to the project root directory.")
 
+    abi3: bool = Field(
+        default=False,
+        description="If True, build the extension with Python's ABI3 compatibility.",
+    )
+
     target: Optional[str] = Field(
         default=None,
         description="Target platform for the build. If not specified, it will be determined automatically.",
@@ -147,13 +152,19 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
             # Copy each file to the current directory
             if sys_platform == "win32":
-                library_name = f"{self.module}\\{file_name}.pyd"
+                if self.abi3:
+                    library_name = f"{self.module}\\{file_name}.abi3.pyd"
+                else:
+                    library_name = f"{self.module}\\{file_name}.pyd"
                 self._libraries.append(library_name)
                 copy_command = f"copy {file} {cwd}\\{library_name}"
             else:
                 if which("cp") is None:
                     raise EnvironmentError("cp command not found. Ensure it is installed and available in PATH.")
-                library_name = f"{self.module}/{file_name}.so"
+                if self.abi3:
+                    library_name = f"{self.module}/{file_name}.abi3.so"
+                else:
+                    library_name = f"{self.module}/{file_name}.so"
                 self._libraries.append(library_name)
                 copy_command = f"cp -f {file} {cwd}/{library_name}"
             system_call(copy_command)

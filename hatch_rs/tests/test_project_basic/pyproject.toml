@@ -30,5 +30,6 @@ packages = ["project"]
 
 [tool.hatch.build.hooks.hatch-rs]
 verbose = true
+abi3 = true
 path = "."
 module = "project"
