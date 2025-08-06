@@ -7,7 +7,7 @@ from shutil import which
 from sys import platform as sys_platform
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 __all__ = (
     "HatchRustBuildConfig",
@@ -51,6 +51,8 @@ class HatchRustBuildConfig(BaseModel):
 class HatchRustBuildPlan(HatchRustBuildConfig):
     build_type: BuildType = "release"
     commands: List[str] = Field(default_factory=list)
+
+    _libraries: List[str] = PrivateAttr(default_factory=list)
 
     def generate(self):
         self.commands = []
@@ -145,14 +147,16 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
             # Copy each file to the current directory
             if sys_platform == "win32":
-                copy_command = f"copy {file} {cwd}\\{self.module}\\{file_name}.pyd"
+                library_name = f"{self.module}\\{file_name}.pyd"
+                self._libraries.append(library_name)
+                copy_command = f"copy {file} {cwd}\\{library_name}"
             else:
                 if which("cp") is None:
                     raise EnvironmentError("cp command not found. Ensure it is installed and available in PATH.")
-                copy_command = f"cp -f {file} {cwd}/{self.module}/{file_name}.so"
-                print(copy_command)
+                library_name = f"{self.module}/{file_name}.so"
+                self._libraries.append(library_name)
+                copy_command = f"cp -f {file} {cwd}/{library_name}"
             system_call(copy_command)
-
         return self.commands
 
     def cleanup(self):
