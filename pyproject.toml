@@ -30,7 +30,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
-dependencies = []
+dependencies = [
+    "hatchling>=1.20",
+    "pydantic",
+]
 
 [project.optional-dependencies]
 develop = [
