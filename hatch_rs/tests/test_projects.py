@@ -35,7 +35,7 @@ class TestProject:
 
         # assert built
         if platform == "win32":
-            assert "project.abi3.pyd" in listdir(f"hatch_rs/tests/{project_folder}/project")
+            assert "project.pyd" in listdir(f"hatch_rs/tests/{project_folder}/project")
         else:
             assert "project.abi3.so" in listdir(f"hatch_rs/tests/{project_folder}/project")
 

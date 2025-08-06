@@ -152,10 +152,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
             # Copy each file to the current directory
             if sys_platform == "win32":
-                if self.abi3:
-                    library_name = f"{self.module}\\{file_name}.abi3.pyd"
-                else:
-                    library_name = f"{self.module}\\{file_name}.pyd"
+                library_name = f"{self.module}\\{file_name}.pyd"
                 self._libraries.append(library_name)
                 copy_command = f"copy {file} {cwd}\\{library_name}"
             else:
