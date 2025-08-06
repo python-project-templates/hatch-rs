@@ -2,22 +2,24 @@ from os import listdir
 from pathlib import Path
 from shutil import rmtree
 from subprocess import check_call
-from sys import modules, path, platform
+from sys import executable, modules, path, platform, version_info
 
 import pytest
 
 
 class TestProject:
     @pytest.mark.parametrize(
-        "project",
+        "project_folder",
         [
             "test_project_basic",
         ],
     )
-    def test_basic(self, project):
+    def test_basic(self, project_folder):
         # cleanup
-        rmtree(f"hatch_rs/tests/{project}/project/extension.so", ignore_errors=True)
-        rmtree(f"hatch_rs/tests/{project}/project/extension.pyd", ignore_errors=True)
+        rmtree(f"hatch_rs/tests/{project_folder}/dist", ignore_errors=True)
+        rmtree(f"hatch_rs/tests/{project_folder}/target", ignore_errors=True)
+        rmtree(f"hatch_rs/tests/{project_folder}/project/extension.so", ignore_errors=True)
+        rmtree(f"hatch_rs/tests/{project_folder}/project/extension.pyd", ignore_errors=True)
         modules.pop("project", None)
         modules.pop("project.extension", None)
 
@@ -28,21 +30,31 @@ class TestProject:
                 "build",
                 "--hooks-only",
             ],
-            cwd=f"hatch_rs/tests/{project}",
+            cwd=f"hatch_rs/tests/{project_folder}",
         )
 
         # assert built
-
-        if project == "test_project_limited_api" and platform != "win32":
-            assert "project.abi3.so" in listdir(f"hatch_rs/tests/{project}/project")
+        if platform == "win32":
+            assert "project.pyd" in listdir(f"hatch_rs/tests/{project_folder}/project")
         else:
-            if platform == "win32":
-                assert "project.pyd" in listdir(f"hatch_rs/tests/{project}/project")
-            else:
-                assert "project.so" in listdir(f"hatch_rs/tests/{project}/project")
+            assert "project.so" in listdir(f"hatch_rs/tests/{project_folder}/project")
+
+        # dist
+        check_call(
+            [
+                executable,
+                "-m",
+                "build",
+                "-w",
+                "-n",
+            ],
+            cwd=f"hatch_rs/tests/{project_folder}",
+        )
+
+        assert f"cp3{version_info.minor}-cp3{version_info.minor}" in listdir(f"hatch_rs/tests/{project_folder}/dist")[0]
 
         # import
-        here = Path(__file__).parent / project
+        here = Path(__file__).parent / project_folder
         path.insert(0, str(here))
         import project.project
 

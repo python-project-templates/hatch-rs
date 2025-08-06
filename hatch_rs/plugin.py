@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from logging import getLogger
 from os import getenv
+from pathlib import Path
+from platform import machine as platform_machine
+from sys import platform as sys_platform, version_info
 from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
@@ -63,12 +66,12 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         # Perform any cleanup actions
         build_plan.cleanup()
 
-        # if build_plan.libraries:
-        #     # force include libraries
-        #     # for library in build_plan.libraries:
-        #     #     name = library.get_qualified_name(build_plan.platform.platform)
-        #     #     build_data["force_include"][name] = name
+        if not build_plan._libraries:
+            raise ValueError("No libraries were created by the build.")
 
+        # force include libraries
+        # for library in build_plan._libraries:
+        #     build_data["force_include"][library] = library
         #     build_data["pure_python"] = False
         #     machine = platform_machine()
         #     version_major = version_info.major
@@ -83,28 +86,28 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         #         build_data["tag"] = f"cp{version_major}{version_minor}-abi3-{os_name}_{machine}"
         #     else:
         #         build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
-        # else:
-        #     build_data["pure_python"] = False
-        #     machine = platform_machine()
-        #     version_major = version_info.major
-        #     version_minor = version_info.minor
-        #     # TODO abi3
-        #     if "darwin" in sys_platform:
-        #         os_name = "macosx_11_0"
-        #     elif "linux" in sys_platform:
-        #         os_name = "linux"
-        #     else:
-        #         os_name = "win"
-        #     build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
+        build_data["pure_python"] = False
+        machine = platform_machine()
+        version_major = version_info.major
+        version_minor = version_info.minor
 
-        #     # force include libraries
-        #     for path in Path(".").rglob("*"):
-        #         if path.is_dir():
-        #             continue
-        #         if str(path).startswith(str(build_plan.cmake.build)) or str(path).startswith("dist"):
-        #             continue
-        #         if path.suffix in (".pyd", ".dll", ".so", ".dylib"):
-        #             build_data["force_include"][str(path)] = str(path)
+        # TODO abi3
+        if "darwin" in sys_platform:
+            os_name = "macosx_11_0"
+        elif "linux" in sys_platform:
+            os_name = "linux"
+        else:
+            os_name = "win"
+        build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
 
-        # for path in build_data["force_include"]:
-        #     self._logger.warning(f"Force include: {path}")
+        # force include libraries
+        for path in Path(".").rglob("*"):
+            if path.is_dir():
+                continue
+            if str(path).startswith("target") or str(path).startswith("dist"):
+                continue
+            if path.suffix in (".pyd", ".dll", ".so", ".dylib"):
+                build_data["force_include"][str(path)] = str(path)
+
+        for path in build_data["force_include"]:
+            self._logger.warning(f"Force include: {path}")
