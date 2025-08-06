@@ -8,7 +8,7 @@ authors = [{name = "the hatch-rs authors", email = "t.paine154@gmail.com"}]
 description = "Hatch plugin for Rust builds"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-version = "0.1.1"
+version = "0.1.2"
 requires-python = ">=3.9"
 keywords = [
     "hatch",
@@ -63,7 +63,7 @@ Repository = "https://github.com/python-project-templates/hatch-rs"
 Homepage = "https://github.com/python-project-templates/hatch-rs"
 
 [tool.bumpversion]
-current_version = "0.1.1"
+current_version = "0.1.2"
 commit = true
 tag = true
 commit_args = "-s"
