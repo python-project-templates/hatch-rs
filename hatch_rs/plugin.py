@@ -107,7 +107,7 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         for path in Path(".").rglob("*"):
             if path.is_dir():
                 continue
-            if str(path).startswith("target") or str(path).startswith("dist"):
+            if str(path).startswith("target") or str(path).startswith("dist") or not str(path).startswith(config.module):
                 continue
             if path.suffix in (".pyd", ".dll", ".so", ".dylib"):
                 build_data["force_include"][str(path)] = str(path)
