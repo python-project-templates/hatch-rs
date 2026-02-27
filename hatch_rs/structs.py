@@ -117,7 +117,9 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         chdir(self.path)
 
         for command in self.commands:
-            system_call(command)
+            ret = system_call(command)
+            if ret != 0:
+                raise RuntimeError(f"hatch-rs build command failed with exit code {ret}: {command}")
 
         # Go back to original path
         chdir(str(cwd))
@@ -164,7 +166,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                     library_name = f"{self.module}/{file_name}.so"
                 self._libraries.append(library_name)
                 copy_command = f"cp -f {file} {cwd}/{library_name}"
-            system_call(copy_command)
+            ret = system_call(copy_command)
+            if ret != 0:
+                raise RuntimeError(f"hatch-rs copy command failed with exit code {ret}: {copy_command}")
+
         return self.commands
 
     def cleanup(self):
