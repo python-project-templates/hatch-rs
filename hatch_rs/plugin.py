@@ -87,7 +87,7 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         #     else:
         #         build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
         build_data["pure_python"] = False
-        machine = platform_machine()
+        machine = platform_machine().lower()
         version_major = version_info.major
         version_minor = version_info.minor
 
