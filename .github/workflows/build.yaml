@@ -78,6 +78,14 @@ jobs:
     - name: Make dist
       run: make dist
 
+    - uses: actions-ext/python/test-wheel@main
+      with:
+        module: hatch_rs
+
+    - uses: actions-ext/python/test-sdist@main
+      with:
+        module: hatch_rs
+
     - uses: actions/upload-artifact@v7
       with:
         name: dist-${{matrix.os}}
