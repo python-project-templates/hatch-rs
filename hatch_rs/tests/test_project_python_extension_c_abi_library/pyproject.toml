@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-rs-test-project-python-extension-c-abi-library"
+description = "Python extension plus C ABI library test project for hatch-rs"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "hatchling>=1.20",
+    "hatch-rs",
+]
+
+[tool.hatch.build]
+artifacts = [
+    "c_abi_bundle_project/*.dll",
+    "c_abi_bundle_project/*.dylib",
+    "c_abi_bundle_project/*.pyd",
+    "c_abi_bundle_project/*.so",
+    "c_abi_bundle_project/lib/*.dll",
+    "c_abi_bundle_project/lib/*.dylib",
+    "c_abi_bundle_project/lib/*.so",
+]
+
+[tool.hatch.build.sources]
+src = "/"
+
+[tool.hatch.build.targets.sdist]
+packages = ["c_abi_bundle_project"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["c_abi_bundle_project"]
+
+[tool.hatch.build.hooks.hatch-rs]
+verbose = true
+path = "."
+module = "c_abi_bundle_project"
+target-dir = "isolated"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "python-extension"
+kind = "python-extension"
+manifest = "Cargo.toml"
+library = "c_abi_bundle_extension"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "c-abi"
+kind = "shared-library"
+manifest = "rust/Cargo.toml"
+library = "c_abi_library"
+crate-type = "cdylib"
+destination = "c_abi_bundle_project/lib/{shared_library}"

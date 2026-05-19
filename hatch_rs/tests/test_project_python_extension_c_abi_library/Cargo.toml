@@ -1,0 +1,13 @@
+[package]
+name = "c_abi_bundle_extension_py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "c_abi_bundle_extension"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"

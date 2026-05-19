@@ -18,5 +18,37 @@ path = "."
 module = "project"
 ```
 
+### Shared C ABI libraries
+
+Projects can declare multiple Rust artifacts in one hook. A `python-extension`
+artifact keeps the existing PyO3 extension flow, while a `shared-library`
+artifact builds a standalone `cdylib`, copies the exact platform library name to
+the configured destination, and includes it in the wheel.
+
+```toml
+[tool.hatch.build.hooks.hatch-rs]
+verbose = true
+path = "."
+module = "project"
+target-dir = "isolated"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "python-extension"
+kind = "python-extension"
+manifest = "Cargo.toml"
+library = "project"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "c-abi"
+kind = "shared-library"
+manifest = "rust/Cargo.toml"
+library = "project_ffi"
+crate-type = "cdylib"
+destination = "project/lib/{shared_library}"
+```
+
+Destination templates support `{module}`, `{target}`, `{profile}`, `{library}`,
+`{shared_library}`, and `{python_extension_name}`.
+
 > [!NOTE]
 > This library was generated using [copier](https://copier.readthedocs.io/en/stable/) from the [Base Python Project Template repository](https://github.com/python-project-templates/base).
