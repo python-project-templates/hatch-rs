@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from logging import getLogger
 from os import getenv
-from pathlib import Path
 from platform import machine as platform_machine
 from sys import platform as sys_platform, version_info
 from typing import Any
@@ -61,12 +60,13 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
                 self._logger.warning(command)
 
         # Execute build plan
-        build_plan.execute()
+        try:
+            build_plan.execute()
+        finally:
+            # Perform any cleanup actions
+            build_plan.cleanup()
 
-        # Perform any cleanup actions
-        build_plan.cleanup()
-
-        if not build_plan._libraries:
+        if not build_plan.libraries:
             raise ValueError("No libraries were created by the build.")
 
         # force include libraries
@@ -104,13 +104,9 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
             build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
 
         # force include libraries
-        for path in Path(".").rglob("*"):
-            if path.is_dir():
-                continue
-            if str(path).startswith("target") or str(path).startswith("dist") or not str(path).startswith(config.module):
-                continue
-            if path.suffix in (".pyd", ".dll", ".so", ".dylib"):
-                build_data["force_include"][str(path)] = str(path)
+        force_include = build_data.setdefault("force_include", {})
+        for artifact in build_plan.copied_artifacts:
+            force_include[artifact.distribution_path] = artifact.distribution_path
 
-        for path in build_data["force_include"]:
+        for path in force_include:
             self._logger.warning(f"Force include: {path}")

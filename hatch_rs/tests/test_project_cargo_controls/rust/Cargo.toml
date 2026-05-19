@@ -1,0 +1,13 @@
+[package]
+name = "cargo_controls_project_py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "cargo_controls_extension"
+path = "src/lib.rs"
+
+[features]
+default = []
+ffi = []
