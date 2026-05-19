@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-rs-test-project-c-abi-validation-failure"
+description = "C ABI validation failure test project for hatch-rs"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "hatchling>=1.20",
+    "hatch-rs",
+]
+
+[tool.hatch.build]
+artifacts = [
+    "validation_failure_project/lib/*.dll",
+    "validation_failure_project/lib/*.dylib",
+    "validation_failure_project/lib/*.so",
+]
+
+[tool.hatch.build.sources]
+src = "/"
+
+[tool.hatch.build.targets.sdist]
+packages = ["validation_failure_project"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["validation_failure_project"]
+
+[tool.hatch.build.hooks.hatch-rs]
+verbose = true
+path = "."
+module = "validation_failure_project"
+target-dir = "isolated"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "c-abi-validation-failure"
+kind = "shared-library"
+manifest = "Cargo.toml"
+library = "validation_failure"
+crate-type = "cdylib"
+destination = "validation_failure_project/lib/{shared_library}"
+expected-symbols = ["validation_failure_missing_symbol"]

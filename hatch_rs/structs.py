@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from ctypes import CDLL
 from dataclasses import dataclass
+from glob import glob
+from json import dumps
 from os import environ
 from pathlib import Path
 from platform import machine as platform_machine
@@ -17,19 +20,23 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 __all__ = (
     "CargoInvocation",
     "CopiedArtifact",
+    "GeneratedOutputConfig",
     "HatchRustBuildConfig",
     "HatchRustBuildPlan",
     "ResolvedTarget",
     "RustArtifactConfig",
+    "ValidationCommandConfig",
     "python_extension_name",
     "resolve_target_triple",
     "shared_library_name",
 )
 
-ArtifactKind = Literal["python-extension", "shared-library"]
+ArtifactKind = Literal["python-extension", "shared-library", "command", "header"]
 BuildType = Literal["debug", "release"]
 CargoTargetKind = Literal["lib", "bin", "example", "test", "bench"]
+CbindgenMode = Literal["cli", "build-script"]
 CompilerToolchain = Literal["gcc", "clang", "msvc"]
+InstallScheme = Literal["package", "shared-data", "validate-only"]
 Language = Literal["c", "c++"]
 Binding = Literal["cpython", "pybind11", "nanobind", "generic"]
 Platform = Literal["linux", "darwin", "win32"]
@@ -188,6 +195,50 @@ def _profile_output_dir(profile: str) -> str:
     return profile
 
 
+class GeneratedOutputConfig(BaseModel):
+    """A generated file output and how it should be included in the wheel."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    source: Path = Field(description="Generated or validated source path, relative to the hook path unless absolute.")
+    destination: Optional[str] = Field(default=None, description="Wheel-relative destination path or template.")
+    install_scheme: InstallScheme = Field(default="package", alias="install-scheme", description="How to include this output.")
+    required: bool = Field(default=True, description="Whether the source must exist after the artifact runs.")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def validate_source(cls, source: Path) -> Path:
+        if not isinstance(source, Path):
+            source = Path(source)
+        return source
+
+
+class ValidationCommandConfig(BaseModel):
+    """A project-specific command used to validate a built artifact."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    command: List[str] = Field(description="Validation command argv list.")
+    working_directory: Optional[Path] = Field(default=None, alias="working-directory", description="Validation command working directory.")
+    env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for this validation command.")
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def validate_command(cls, values: Any) -> list[str]:
+        if isinstance(values, str):
+            raise ValueError("Validation command must be an argv list, not a shell string.")
+        return [str(value) for value in values]
+
+    @field_validator("working_directory", mode="before")
+    @classmethod
+    def validate_working_directory(cls, path: Optional[Path]) -> Optional[Path]:
+        if path is None:
+            return None
+        if not isinstance(path, Path):
+            path = Path(path)
+        return path
+
+
 class RustArtifactConfig(BaseModel):
     """Configuration for one Rust build artifact."""
 
@@ -218,6 +269,45 @@ class RustArtifactConfig(BaseModel):
     cargo_args: Optional[List[str]] = Field(default=None, alias="cargo-args", description="Additional Cargo arguments for this artifact.")
     rustc_args: Optional[List[str]] = Field(default=None, alias="rustc-args", description="Additional rustc arguments for this artifact.")
     env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for this artifact.")
+    command: Optional[List[str]] = Field(default=None, description="Command argv for generated-file artifacts.")
+    inputs: List[str] = Field(default_factory=list, description="Input files/globs for validation and documentation.")
+    outputs: List[GeneratedOutputConfig] = Field(default_factory=list, description="Generated file outputs.")
+    working_directory: Optional[Path] = Field(default=None, alias="working-directory", description="Command working directory.")
+    generator: Optional[str] = Field(default=None, description="Typed generator preset, currently cbindgen.")
+    crate: Optional[str] = Field(default=None, description="Rust crate path for cbindgen CLI mode.")
+    config: Optional[Path] = Field(default=None, description="Generator config path, such as cbindgen.toml.")
+    language: Optional[str] = Field(default=None, description="Generator language, such as C, C++, or Cython.")
+    output: Optional[Path] = Field(default=None, description="Generated header output path for header artifacts.")
+    source: Optional[Path] = Field(default=None, description="Existing/generated header source path for header artifacts.")
+    install_scheme: Optional[InstallScheme] = Field(default=None, alias="install-scheme", description="Header output install scheme.")
+    required: bool = Field(default=True, description="Whether a header source must exist after generation.")
+    verify: bool = Field(default=False, description="Run a generator in verification mode when supported.")
+    cbindgen_mode: CbindgenMode = Field(default="cli", alias="cbindgen-mode", description="How cbindgen headers are produced.")
+    cpp_compat: bool = Field(default=False, alias="cpp-compat", description="Reserved for cbindgen C++ compatibility presets.")
+    depfile: Optional[Path] = Field(default=None, description="Reserved depfile path for generated headers.")
+    expected_symbols: List[str] = Field(default_factory=list, alias="expected-symbols", description="Exported symbols expected in a copied library.")
+    expected_headers: List[Path] = Field(default_factory=list, alias="expected-headers", description="Header files expected to exist after build.")
+    expected_abi_strings: List[str] = Field(
+        default_factory=list,
+        alias="expected-abi-strings",
+        description="ABI version strings or macros expected in the configured headers.",
+    )
+    runtime_load: bool = Field(default=False, alias="runtime-load", description="Load the copied library with ctypes.CDLL after copy.")
+    validation_commands: List[ValidationCommandConfig] = Field(
+        default_factory=list,
+        alias="validation-commands",
+        description="Project-specific validation commands to run after artifact copy.",
+    )
+    include_import_lib: bool = Field(
+        default=False,
+        alias="include-import-lib",
+        description="On Windows, include the import library emitted next to a cdylib.",
+    )
+    import_library_destination: Optional[str] = Field(
+        default=None,
+        alias="import-library-destination",
+        description="Wheel-relative destination template for a Windows import library.",
+    )
 
     @field_validator("manifest", mode="before")
     @classmethod
@@ -237,13 +327,69 @@ class RustArtifactConfig(BaseModel):
             return [values]
         return list(values)
 
+    @field_validator("command", mode="before")
+    @classmethod
+    def validate_command(cls, values: Any) -> Optional[list[str]]:
+        if values is None:
+            return None
+        if isinstance(values, str):
+            raise ValueError("Artifact command must be an argv list, not a shell string.")
+        return [str(value) for value in values]
+
+    @field_validator("inputs", mode="before")
+    @classmethod
+    def validate_inputs(cls, values: Any) -> list[str]:
+        if values is None:
+            return []
+        if isinstance(values, str):
+            return [values]
+        return [str(value) for value in values]
+
+    @field_validator("expected_symbols", "expected_abi_strings", mode="before")
+    @classmethod
+    def validate_string_list(cls, values: Any) -> list[str]:
+        if values is None:
+            return []
+        if isinstance(values, str):
+            return [values]
+        return [str(value) for value in values]
+
+    @field_validator("expected_headers", mode="before")
+    @classmethod
+    def validate_path_list(cls, values: Any) -> list[Path]:
+        if values is None:
+            return []
+        if isinstance(values, (str, Path)):
+            values = [values]
+        return [value if isinstance(value, Path) else Path(value) for value in values]
+
+    @field_validator("validation_commands", mode="before")
+    @classmethod
+    def validate_validation_commands(cls, values: Any) -> list[Any]:
+        if values is None:
+            return []
+        if isinstance(values, dict):
+            return [values]
+        if isinstance(values, list) and values and all(not isinstance(value, dict) for value in values):
+            return [{"command": values}]
+        return list(values)
+
+    @field_validator("working_directory", "config", "output", "source", "depfile", mode="before")
+    @classmethod
+    def validate_optional_path(cls, path: Optional[Path]) -> Optional[Path]:
+        if path is None:
+            return None
+        if not isinstance(path, Path):
+            path = Path(path)
+        return path
+
 
 @dataclass(frozen=True)
 class PlannedArtifact:
     """A generated Cargo invocation plus the metadata needed to collect its output."""
 
     artifact: RustArtifactConfig
-    invocation: CargoInvocation
+    invocation: Optional[CargoInvocation]
     resolved_target: ResolvedTarget
     profile: str
     target_dir: Path
@@ -273,6 +419,16 @@ class HatchRustBuildConfig(BaseModel):
     target_dir: Optional[str] = Field(default=None, alias="target-dir", description="Cargo target directory mode or explicit path.")
     env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for Cargo.")
     artifacts: List[RustArtifactConfig] = Field(default_factory=list, description="Explicit Rust artifacts to build and package.")
+    artifact_manifest: bool = Field(
+        default=False,
+        alias="artifact-manifest",
+        description="Emit a package-local JSON manifest describing packaged artifacts.",
+    )
+    artifact_manifest_destination: str = Field(
+        default="{module}/lib/hatch-rs-artifacts.json",
+        alias="artifact-manifest-destination",
+        description="Wheel-relative destination template for the artifact metadata manifest.",
+    )
 
     abi3: bool = Field(
         default=False,
@@ -322,6 +478,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     _cargo_invocations: List[CargoInvocation] = PrivateAttr(default_factory=list)
     _artifact_plans: List[PlannedArtifact] = PrivateAttr(default_factory=list)
     _copied_artifacts: List[CopiedArtifact] = PrivateAttr(default_factory=list)
+    _shared_data: dict[str, str] = PrivateAttr(default_factory=dict)
+    _artifact_manifest_records: list[dict[str, str]] = PrivateAttr(default_factory=list)
     _resolved_target: Optional[ResolvedTarget] = PrivateAttr(default=None)
     _target_dir: Optional[Path] = PrivateAttr(default=None)
     _set_target_dir_env: bool = PrivateAttr(default=False)
@@ -338,6 +496,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     @property
     def copied_artifacts(self) -> List[CopiedArtifact]:
         return list(self._copied_artifacts)
+
+    @property
+    def shared_data(self) -> dict[str, str]:
+        return dict(self._shared_data)
 
     def _configured_artifacts(self) -> list[RustArtifactConfig]:
         if self.artifacts:
@@ -470,6 +632,64 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             set_target_dir_env=set_target_dir_env,
         )
 
+    def _build_command_environment(self, artifact: RustArtifactConfig) -> dict[str, str]:
+        environment = {str(key): str(value) for key, value in environ.items()}
+        environment.update(self._artifact_env(artifact))
+        return environment
+
+    def _cbindgen_language(self, artifact: RustArtifactConfig) -> str:
+        language = artifact.language or "C"
+        normalized = language.lower()
+        if normalized not in ("c", "c++", "cython"):
+            raise ValueError(f"Artifact '{self._artifact_label(artifact)}' has unsupported cbindgen language: {language}")
+        return normalized
+
+    def _build_cbindgen_command(self, artifact: RustArtifactConfig) -> list[str]:
+        output = artifact.output or artifact.source
+        if output is None:
+            raise ValueError(f"cbindgen artifact '{self._artifact_label(artifact)}' must set output or source.")
+
+        command = ["cbindgen"]
+        if artifact.config is not None:
+            command.extend(("--config", _cargo_path(artifact.config)))
+        command.extend(("--lang", self._cbindgen_language(artifact)))
+        command.extend(("--output", _cargo_path(output)))
+        if artifact.verify:
+            command.append("--verify")
+
+        crate = artifact.crate
+        if crate is None and artifact.manifest is not None:
+            crate = artifact.manifest.parent.as_posix() or "."
+        if crate is not None:
+            command.append(crate)
+        return command
+
+    def _build_command_artifact_plan(self, artifact: RustArtifactConfig, *, global_target: Optional[str]) -> PlannedArtifact:
+        resolved_target = _resolve_target(artifact.target if artifact.target is not None else global_target)
+        profile = self._artifact_profile(artifact)
+        manifest = self._artifact_manifest(artifact)
+        target_dir, set_target_dir_env = self._resolve_target_dir(manifest, self._artifact_env(artifact))
+
+        command = artifact.command
+        if artifact.kind == "header" and artifact.generator == "cbindgen" and artifact.cbindgen_mode == "cli" and command is None:
+            command = self._build_cbindgen_command(artifact)
+        elif artifact.kind == "command" and command is None:
+            raise ValueError(f"Command artifact '{self._artifact_label(artifact)}' must set command.")
+
+        invocation = None
+        if command is not None:
+            working_directory = _resolve_path(artifact.working_directory or ".", base=Path(self.path))
+            invocation = CargoInvocation(args=tuple(command), cwd=working_directory, env=self._build_command_environment(artifact))
+
+        return PlannedArtifact(
+            artifact=artifact,
+            invocation=invocation,
+            resolved_target=resolved_target,
+            profile=profile,
+            target_dir=target_dir,
+            set_target_dir_env=set_target_dir_env,
+        )
+
     def generate(self):
         if self._temporary_target_dir is not None:
             self._temporary_target_dir.cleanup()
@@ -479,14 +699,21 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         self._cargo_invocations = []
         self._artifact_plans = []
         self._copied_artifacts = []
+        self._shared_data = {}
+        self._artifact_manifest_records = []
         self._libraries = []
 
         global_target = self.target
         for artifact in self._configured_artifacts():
-            planned_artifact = self._build_artifact_plan(artifact, global_target=global_target)
+            if artifact.kind in ("python-extension", "shared-library"):
+                planned_artifact = self._build_artifact_plan(artifact, global_target=global_target)
+            else:
+                planned_artifact = self._build_command_artifact_plan(artifact, global_target=global_target)
             self._artifact_plans.append(planned_artifact)
-            self._cargo_invocations.append(planned_artifact.invocation)
-            self.commands.append(planned_artifact.invocation.display)
+            if planned_artifact.invocation is not None:
+                if artifact.kind in ("python-extension", "shared-library"):
+                    self._cargo_invocations.append(planned_artifact.invocation)
+                self.commands.append(planned_artifact.invocation.display)
 
         if self._artifact_plans:
             first_artifact = self._artifact_plans[0]
@@ -544,7 +771,15 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             )
         return candidates[0]
 
-    def _format_destination(self, template: str, *, planned_artifact: PlannedArtifact, source: Path, shared_library: str = "") -> Path:
+    def _format_destination(
+        self,
+        template: str,
+        *,
+        planned_artifact: PlannedArtifact,
+        source: Path,
+        shared_library: str = "",
+        import_library: str = "",
+    ) -> Path:
         artifact = planned_artifact.artifact
         python_extension = python_extension_name(_cargo_artifact_stem(source), abi3=self.abi3, platform=planned_artifact.resolved_target.platform)
         values = {
@@ -553,6 +788,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             "profile": planned_artifact.profile,
             "library": artifact.library or "",
             "shared_library": shared_library,
+            "import_library": import_library,
             "python_extension_name": python_extension,
         }
         try:
@@ -564,16 +800,72 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             raise ValueError(f"Artifact '{self._artifact_label(artifact)}' destination must be relative: {rendered}")
         return distribution_path
 
-    def _copy_artifact(self, source: Path, distribution_path: Path, *, build_root: Path) -> None:
+    def _relative_display_path(self, path: Path) -> str:
+        resolved = path.resolve()
+        for base in (Path(self.path).resolve(), Path.cwd().resolve()):
+            try:
+                return resolved.relative_to(base).as_posix()
+            except ValueError:
+                continue
+        return str(resolved)
+
+    def _record_packaged_artifact(
+        self,
+        *,
+        planned_artifact: PlannedArtifact,
+        source: Path,
+        distribution_path: str,
+        install_scheme: str,
+        role: str,
+    ) -> None:
+        artifact = planned_artifact.artifact
+        manifest = self._artifact_manifest(artifact)
+        record = {
+            "name": self._artifact_label(artifact),
+            "kind": artifact.kind,
+            "role": role,
+            "target": planned_artifact.resolved_target.triple,
+            "platform": planned_artifact.resolved_target.platform,
+            "profile": planned_artifact.profile,
+            "source": self._relative_display_path(source),
+            "destination": distribution_path,
+            "install_scheme": install_scheme,
+        }
+        if manifest is not None:
+            record["manifest"] = self._relative_display_path(_resolve_path(manifest, base=Path(self.path)))
+        self._artifact_manifest_records.append(record)
+
+    def _copy_artifact(
+        self,
+        source: Path,
+        distribution_path: Path,
+        *,
+        build_root: Path,
+        is_library: bool = False,
+        planned_artifact: Optional[PlannedArtifact] = None,
+        role: str = "file",
+        install_scheme: str = "package",
+    ) -> CopiedArtifact:
         destination = build_root / distribution_path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        copy2(source, destination)
+        if source.resolve() != destination.resolve():
+            copy2(source, destination)
 
         copied_artifact = CopiedArtifact(source=source, destination=destination, distribution_path=distribution_path.as_posix())
         self._copied_artifacts.append(copied_artifact)
-        self._libraries.append(copied_artifact.distribution_path)
+        if is_library:
+            self._libraries.append(copied_artifact.distribution_path)
+        if planned_artifact is not None:
+            self._record_packaged_artifact(
+                planned_artifact=planned_artifact,
+                source=source,
+                distribution_path=copied_artifact.distribution_path,
+                install_scheme=install_scheme,
+                role=role,
+            )
+        return copied_artifact
 
-    def _copy_python_extension(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> None:
+    def _copy_python_extension(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
         artifact = planned_artifact.artifact
         target_path = self._require_target_path(planned_artifact)
         platform = planned_artifact.resolved_target.platform
@@ -583,19 +875,140 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             source = self._find_exact_artifact(target_path, expected_name, search_deps=artifact.search_deps, artifact=artifact)
             template = artifact.destination or f"{self.module}/{{python_extension_name}}"
             distribution_path = self._format_destination(template, planned_artifact=planned_artifact, source=source)
-            self._copy_artifact(source, distribution_path, build_root=build_root)
-            return
+            return [
+                self._copy_artifact(
+                    source,
+                    distribution_path,
+                    build_root=build_root,
+                    is_library=True,
+                    planned_artifact=planned_artifact,
+                    role="python-extension",
+                )
+            ]
 
         files = self._find_dynamic_artifacts(target_path, platform)
         if not files:
             raise FileNotFoundError(f"No build artifacts found in '{target_path}' for artifact '{self._artifact_label(artifact)}'.")
 
+        copied_artifacts = []
         template = artifact.destination or f"{self.module}/{{python_extension_name}}"
         for source in files:
             distribution_path = self._format_destination(template, planned_artifact=planned_artifact, source=source)
-            self._copy_artifact(source, distribution_path, build_root=build_root)
+            copied_artifacts.append(
+                self._copy_artifact(
+                    source,
+                    distribution_path,
+                    build_root=build_root,
+                    is_library=True,
+                    planned_artifact=planned_artifact,
+                    role="python-extension",
+                )
+            )
+        return copied_artifacts
 
-    def _copy_shared_library(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> None:
+    def _import_library_names(self, artifact: RustArtifactConfig, shared_library: str) -> tuple[str, ...]:
+        if not artifact.library:
+            return ()
+
+        candidates = (
+            f"{shared_library}.lib",
+            f"{shared_library}.a",
+            f"{artifact.library}.dll.lib",
+            f"{artifact.library}.lib",
+            f"lib{artifact.library}.dll.a",
+        )
+        return tuple(dict.fromkeys(candidates))
+
+    def _import_library_patterns(self, artifact: RustArtifactConfig) -> tuple[tuple[str, str], ...]:
+        if not artifact.library:
+            return ()
+
+        return (
+            (f"{artifact.library}-*.dll.lib", f"{artifact.library}.dll.lib"),
+            (f"{artifact.library}-*.lib", f"{artifact.library}.lib"),
+            (f"lib{artifact.library}-*.dll.a", f"lib{artifact.library}.dll.a"),
+        )
+
+    def _find_import_library(self, target_path: Path, artifact: RustArtifactConfig, *, shared_library: str) -> tuple[Path, str]:
+        candidate_names = self._import_library_names(artifact, shared_library)
+        candidates = []
+        seen_candidates = set()
+
+        def append_candidate(candidate: Path, import_library: str) -> None:
+            resolved_candidate = candidate.resolve()
+            if resolved_candidate not in seen_candidates:
+                candidates.append((candidate, import_library))
+                seen_candidates.add(resolved_candidate)
+
+        for candidate_name in candidate_names:
+            candidate = target_path / candidate_name
+            if candidate.is_file():
+                append_candidate(candidate, candidate_name)
+        if not candidates:
+            for pattern, import_library in self._import_library_patterns(artifact):
+                for candidate in target_path.glob(pattern):
+                    if candidate.is_file():
+                        append_candidate(candidate, import_library)
+
+        deps_dir = target_path / "deps"
+        if deps_dir.is_dir() and (artifact.search_deps or not candidates):
+            for candidate_name in candidate_names:
+                candidate = deps_dir / candidate_name
+                if candidate.is_file():
+                    append_candidate(candidate, candidate_name)
+            if not candidates:
+                for pattern, import_library in self._import_library_patterns(artifact):
+                    for candidate in deps_dir.glob(pattern):
+                        if candidate.is_file():
+                            append_candidate(candidate, import_library)
+
+        if not candidates:
+            expected_names = ", ".join(candidate_names)
+            raise FileNotFoundError(
+                f"Artifact '{self._artifact_label(artifact)}' requested include-import-lib but none of {expected_names} exist under '{target_path}'."
+            )
+        if len(candidates) > 1:
+            rendered_candidates = ", ".join(str(candidate) for candidate, _ in candidates)
+            raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' produced multiple import libraries: {rendered_candidates}")
+        return candidates[0]
+
+    def _default_import_library_destination(self, artifact: RustArtifactConfig) -> str:
+        if artifact.import_library_destination:
+            return artifact.import_library_destination
+        if artifact.destination:
+            return (Path(artifact.destination).parent / "{import_library}").as_posix()
+        return f"{self.module}/lib/{{import_library}}"
+
+    def _copy_import_library(
+        self,
+        planned_artifact: PlannedArtifact,
+        *,
+        target_path: Path,
+        shared_library: str,
+        build_root: Path,
+    ) -> Optional[CopiedArtifact]:
+        artifact = planned_artifact.artifact
+        if not artifact.include_import_lib or planned_artifact.resolved_target.platform != "win32":
+            return None
+
+        source, import_library = self._find_import_library(target_path, artifact, shared_library=shared_library)
+        template = self._default_import_library_destination(artifact)
+        distribution_path = self._format_destination(
+            template,
+            planned_artifact=planned_artifact,
+            source=source,
+            shared_library=shared_library,
+            import_library=import_library,
+        )
+        return self._copy_artifact(
+            source,
+            distribution_path,
+            build_root=build_root,
+            planned_artifact=planned_artifact,
+            role="import-library",
+        )
+
+    def _copy_shared_library(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
         artifact = planned_artifact.artifact
         if not artifact.library:
             raise ValueError(f"Shared-library artifact '{self._artifact_label(artifact)}' must set library.")
@@ -610,20 +1023,251 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             source=source,
             shared_library=shared_library,
         )
-        self._copy_artifact(source, distribution_path, build_root=build_root)
+        copied_artifacts = [
+            self._copy_artifact(
+                source,
+                distribution_path,
+                build_root=build_root,
+                is_library=True,
+                planned_artifact=planned_artifact,
+                role="shared-library",
+            )
+        ]
+        import_library = self._copy_import_library(
+            planned_artifact,
+            target_path=target_path,
+            shared_library=shared_library,
+            build_root=build_root,
+        )
+        if import_library is not None:
+            copied_artifacts.append(import_library)
+        return copied_artifacts
 
-    def _copy_outputs(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> None:
+    def _artifact_outputs(self, artifact: RustArtifactConfig) -> list[GeneratedOutputConfig]:
+        if artifact.outputs:
+            return list(artifact.outputs)
+        if artifact.kind != "header":
+            return []
+
+        source = artifact.source or artifact.output
+        if source is None:
+            raise ValueError(f"Header artifact '{self._artifact_label(artifact)}' must set source, output, or outputs.")
+        return [
+            GeneratedOutputConfig(
+                source=source,
+                destination=artifact.destination,
+                install_scheme=artifact.install_scheme or "shared-data",
+                required=artifact.required,
+            )
+        ]
+
+    def _validate_inputs(self, artifact: RustArtifactConfig) -> None:
+        base = Path(self.path)
+        for pattern in artifact.inputs:
+            path = Path(pattern)
+            search_pattern = str(path if path.is_absolute() else base / pattern)
+            if not glob(search_pattern, recursive=True):
+                raise FileNotFoundError(f"Artifact '{self._artifact_label(artifact)}' input pattern matched no files: {pattern}")
+
+    def _output_destination(self, output: GeneratedOutputConfig, *, planned_artifact: PlannedArtifact, source: Path) -> Path:
+        template = output.destination or output.source.as_posix()
+        return self._format_destination(template, planned_artifact=planned_artifact, source=source)
+
+    def _process_generated_outputs(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
+        artifact = planned_artifact.artifact
+        outputs = self._artifact_outputs(artifact)
+        if not outputs:
+            raise ValueError(f"Artifact '{self._artifact_label(artifact)}' must declare at least one output.")
+
+        copied_artifacts = []
+        for output in outputs:
+            source = _resolve_path(output.source, base=Path(self.path))
+            if not source.exists():
+                if output.required:
+                    raise FileNotFoundError(f"Artifact '{self._artifact_label(artifact)}' required output does not exist: {output.source}")
+                continue
+
+            if output.install_scheme == "validate-only":
+                continue
+
+            distribution_path = self._output_destination(output, planned_artifact=planned_artifact, source=source)
+            if output.install_scheme == "package":
+                copied_artifacts.append(
+                    self._copy_artifact(
+                        source,
+                        distribution_path,
+                        build_root=build_root,
+                        planned_artifact=planned_artifact,
+                        role="generated-output",
+                    )
+                )
+            elif output.install_scheme == "shared-data":
+                self._shared_data[str(source)] = distribution_path.as_posix()
+                self._record_packaged_artifact(
+                    planned_artifact=planned_artifact,
+                    source=source,
+                    distribution_path=distribution_path.as_posix(),
+                    install_scheme="shared-data",
+                    role="generated-output",
+                )
+            else:
+                raise ValueError(f"Unsupported install scheme for artifact '{self._artifact_label(artifact)}': {output.install_scheme}")
+        return copied_artifacts
+
+    def _validate_expected_headers(self, artifact: RustArtifactConfig) -> list[Path]:
+        headers = []
+        for header in artifact.expected_headers:
+            resolved_header = _resolve_path(header, base=Path(self.path))
+            if not resolved_header.exists():
+                raise FileNotFoundError(f"Artifact '{self._artifact_label(artifact)}' expected header does not exist: {header}")
+            if not resolved_header.is_file():
+                raise FileNotFoundError(f"Artifact '{self._artifact_label(artifact)}' expected header is not a file: {header}")
+            headers.append(resolved_header)
+
+        if artifact.expected_abi_strings and not headers:
+            raise ValueError(f"Artifact '{self._artifact_label(artifact)}' must set expected-headers when using expected-abi-strings.")
+
+        for expected in artifact.expected_abi_strings:
+            if not any(expected in header.read_text(errors="replace") for header in headers):
+                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected ABI string was not found in headers: {expected}")
+        return headers
+
+    def _validate_library_exports(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact]) -> None:
+        artifact = planned_artifact.artifact
+        if not artifact.runtime_load and not artifact.expected_symbols:
+            return
+        if not copied_artifacts:
+            raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' has no copied library to validate.")
+
+        copied_library = copied_artifacts[0]
+        try:
+            library = CDLL(str(copied_library.destination))
+        except OSError as error:
+            raise RuntimeError(
+                f"Artifact '{self._artifact_label(artifact)}' failed runtime load check for '{copied_library.distribution_path}': {error}"
+            ) from error
+
+        for symbol in artifact.expected_symbols:
+            try:
+                getattr(library, symbol)
+            except AttributeError as error:
+                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected symbol was not exported: {symbol}") from error
+
+    def _validation_tokens(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact], headers: list[Path]) -> dict[str, str]:
+        artifact = planned_artifact.artifact
+        copied_artifact = copied_artifacts[0] if copied_artifacts else None
+        shared_library = shared_library_name(artifact.library, platform=planned_artifact.resolved_target.platform) if artifact.library else ""
+        return {
+            "module": self.module,
+            "target": planned_artifact.resolved_target.triple,
+            "profile": planned_artifact.profile,
+            "library": artifact.library or "",
+            "shared_library": shared_library,
+            "source": str(copied_artifact.source) if copied_artifact else "",
+            "destination": str(copied_artifact.destination) if copied_artifact else "",
+            "distribution_path": copied_artifact.distribution_path if copied_artifact else "",
+            "header": str(headers[0]) if headers else "",
+        }
+
+    def _format_validation_command(self, command: ValidationCommandConfig, *, planned_artifact: PlannedArtifact, tokens: dict[str, str]) -> list[str]:
+        args = []
+        for value in command.command:
+            try:
+                args.append(value.format(**tokens))
+            except KeyError as error:
+                raise ValueError(
+                    f"Unknown validation-command token {{{error.args[0]}}} for artifact '{self._artifact_label(planned_artifact.artifact)}'."
+                ) from error
+        return args
+
+    def _run_validation_commands(
+        self,
+        planned_artifact: PlannedArtifact,
+        *,
+        build_root: Path,
+        copied_artifacts: list[CopiedArtifact],
+        headers: list[Path],
+    ) -> None:
+        artifact = planned_artifact.artifact
+        tokens = self._validation_tokens(planned_artifact, copied_artifacts, headers)
+        for validation_command in artifact.validation_commands:
+            command = self._format_validation_command(validation_command, planned_artifact=planned_artifact, tokens=tokens)
+            working_directory = _resolve_path(validation_command.working_directory or ".", base=Path(self.path))
+            environment = self._build_command_environment(artifact)
+            environment.update({str(key): str(value).format(**tokens) for key, value in validation_command.env.items()})
+            environment.update(
+                {
+                    "HATCH_RS_ARTIFACT_NAME": self._artifact_label(artifact),
+                    "HATCH_RS_ARTIFACT_KIND": artifact.kind,
+                    "HATCH_RS_BUILD_ROOT": str(build_root),
+                }
+            )
+            try:
+                completed = run(command, cwd=working_directory, env=environment, check=False)
+            except FileNotFoundError as error:
+                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' validation command was not found: {command[0]}") from error
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    f"Artifact '{self._artifact_label(artifact)}' validation command failed with exit code "
+                    f"{completed.returncode}: {shell_join(command)}"
+                )
+
+    def _validate_artifact(self, planned_artifact: PlannedArtifact, *, build_root: Path, copied_artifacts: list[CopiedArtifact]) -> None:
+        headers = self._validate_expected_headers(planned_artifact.artifact)
+        self._validate_library_exports(planned_artifact, copied_artifacts)
+        self._run_validation_commands(planned_artifact, build_root=build_root, copied_artifacts=copied_artifacts, headers=headers)
+
+    def _format_artifact_manifest_destination(self) -> Path:
+        try:
+            rendered = self.artifact_manifest_destination.format(
+                module=self.module,
+                target=self.target or "",
+                profile=self.profile or self.build_type,
+                library="",
+                shared_library="",
+                import_library="",
+                python_extension_name="",
+            )
+        except KeyError as error:
+            raise ValueError(f"Unknown artifact-manifest-destination token {{{error.args[0]}}}.") from error
+        distribution_path = Path(rendered)
+        if distribution_path.is_absolute():
+            raise ValueError(f"artifact-manifest-destination must be relative: {rendered}")
+        return distribution_path
+
+    def _write_artifact_manifest(self, *, build_root: Path) -> None:
+        if not self.artifact_manifest:
+            return
+
+        distribution_path = self._format_artifact_manifest_destination()
+        destination = build_root / distribution_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "module": self.module,
+            "artifacts": self._artifact_manifest_records,
+        }
+        destination.write_text(dumps(payload, indent=2, sort_keys=True) + "\n")
+        self._copied_artifacts.append(CopiedArtifact(source=destination, destination=destination, distribution_path=distribution_path.as_posix()))
+
+    def _copy_outputs(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
         if planned_artifact.artifact.kind == "python-extension":
-            self._copy_python_extension(planned_artifact, build_root=build_root)
+            copied_artifacts = self._copy_python_extension(planned_artifact, build_root=build_root)
         elif planned_artifact.artifact.kind == "shared-library":
-            self._copy_shared_library(planned_artifact, build_root=build_root)
+            copied_artifacts = self._copy_shared_library(planned_artifact, build_root=build_root)
+        elif planned_artifact.artifact.kind in ("command", "header"):
+            copied_artifacts = self._process_generated_outputs(planned_artifact, build_root=build_root)
         else:
             raise ValueError(f"Unsupported artifact kind: {planned_artifact.artifact.kind}")
+        self._validate_artifact(planned_artifact, build_root=build_root, copied_artifacts=copied_artifacts)
+        return copied_artifacts
 
     def execute(self):
         """Execute the build commands."""
         build_root = Path.cwd().resolve()
         self._copied_artifacts = []
+        self._shared_data = {}
+        self._artifact_manifest_records = []
         self._libraries = []
 
         artifact_plans = self._artifact_plans
@@ -632,10 +1276,28 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             artifact_plans = self._artifact_plans
 
         for planned_artifact in artifact_plans:
-            completed = run(planned_artifact.invocation.args, cwd=planned_artifact.invocation.cwd, env=planned_artifact.invocation.env, check=False)
-            if completed.returncode != 0:
-                raise RuntimeError(f"hatch-rs build command failed with exit code {completed.returncode}: {planned_artifact.invocation.display}")
+            self._validate_inputs(planned_artifact.artifact)
+            if planned_artifact.invocation is not None:
+                try:
+                    completed = run(
+                        planned_artifact.invocation.args,
+                        cwd=planned_artifact.invocation.cwd,
+                        env=planned_artifact.invocation.env,
+                        check=False,
+                    )
+                except FileNotFoundError as error:
+                    executable = planned_artifact.invocation.args[0]
+                    if executable == "cbindgen":
+                        raise RuntimeError(
+                            f"Artifact '{self._artifact_label(planned_artifact.artifact)}' requires the cbindgen CLI. "
+                            "Install cbindgen or use cbindgen-mode = 'build-script'."
+                        ) from error
+                    raise RuntimeError(f"Artifact '{self._artifact_label(planned_artifact.artifact)}' command was not found: {executable}") from error
+                if completed.returncode != 0:
+                    raise RuntimeError(f"hatch-rs build command failed with exit code {completed.returncode}: {planned_artifact.invocation.display}")
             self._copy_outputs(planned_artifact, build_root=build_root)
+
+        self._write_artifact_manifest(build_root=build_root)
 
         return self.commands
 

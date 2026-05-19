@@ -1,0 +1,13 @@
+[package]
+name = "validation_failure"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "validation_failure"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[profile.release]
+panic = "abort"
