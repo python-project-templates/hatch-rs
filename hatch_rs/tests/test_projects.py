@@ -200,8 +200,8 @@ class TestProject:
         assert f"c_abi_bundle_project/lib/{shared_library}" in wheel_names
         assert "c_abi_bundle_project/include/c_abi_library.h" in wheel_names
         assert "c_abi_bundle_project/lib/hatch-rs-artifacts.json" in wheel_names
-        c_abi_records = [record for record in artifact_manifest["artifacts"] if record["name"] == "c-abi"]
-        assert any(record["role"] == "shared-library" for record in c_abi_records)
+        c_abi_records = [record for record in artifact_manifest["artifacts"] if record["name"] == "c_abi_library"]
+        assert any(record["role"] == "cdylib" for record in c_abi_records)
         assert any(record["destination"] == f"c_abi_bundle_project/lib/{shared_library}" for record in c_abi_records)
         if platform == "win32":
             assert any(record["role"] == "import-library" for record in c_abi_records)

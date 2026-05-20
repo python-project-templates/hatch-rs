@@ -28,7 +28,6 @@ module = "generated_files_project"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
 name = "generated-package-files"
-kind = "command"
 command = ["python", "scripts/write_generated_files.py"]
 inputs = ["scripts/write_generated_files.py"]
 
@@ -43,7 +42,8 @@ install-scheme = "validate-only"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
 name = "public-c-header"
-kind = "header"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts.outputs]]
 source = "generated_files_project/include/generated_files_project.h"
 destination = "include/generated_files_project/generated_files_project.h"
 install-scheme = "shared-data"
