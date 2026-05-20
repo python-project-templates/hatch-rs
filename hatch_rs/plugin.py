@@ -66,8 +66,8 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
             # Perform any cleanup actions
             build_plan.cleanup()
 
-        if not build_plan.libraries:
-            raise ValueError("No libraries were created by the build.")
+        if not build_plan.copied_artifacts and not build_plan.shared_data:
+            raise ValueError("No libraries or generated outputs were created by the build.")
 
         # force include libraries
         # for library in build_plan._libraries:
@@ -86,27 +86,33 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         #         build_data["tag"] = f"cp{version_major}{version_minor}-abi3-{os_name}_{machine}"
         #     else:
         #         build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
-        build_data["pure_python"] = False
-        machine = platform_machine().lower()
-        version_major = version_info.major
-        version_minor = version_info.minor
+        if build_plan.libraries:
+            build_data["pure_python"] = False
+            machine = platform_machine().lower()
+            version_major = version_info.major
+            version_minor = version_info.minor
 
-        # TODO abi3
-        if "darwin" in sys_platform:
-            os_name = "macosx_11_0"
-        elif "linux" in sys_platform:
-            os_name = "linux"
-        else:
-            os_name = "win"
-        if config.abi3:
-            build_data["tag"] = f"cp{version_major}{version_minor}-abi3-{os_name}_{machine}"
-        else:
-            build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
+            # TODO abi3
+            if "darwin" in sys_platform:
+                os_name = "macosx_11_0"
+            elif "linux" in sys_platform:
+                os_name = "linux"
+            else:
+                os_name = "win"
+            if config.abi3:
+                build_data["tag"] = f"cp{version_major}{version_minor}-abi3-{os_name}_{machine}"
+            else:
+                build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
 
         # force include libraries
         force_include = build_data.setdefault("force_include", {})
         for artifact in build_plan.copied_artifacts:
             force_include[artifact.distribution_path] = artifact.distribution_path
 
+        shared_data = build_data.setdefault("shared_data", {})
+        shared_data.update(build_plan.shared_data)
+
         for path in force_include:
             self._logger.warning(f"Force include: {path}")
+        for source, destination in shared_data.items():
+            self._logger.warning("Shared data: %s -> %s", source, destination)

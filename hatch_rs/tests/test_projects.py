@@ -1,7 +1,8 @@
+from json import loads
 from os import environ, listdir
 from pathlib import Path
 from shutil import rmtree
-from subprocess import check_call
+from subprocess import PIPE, STDOUT, check_call, run
 from sys import executable, modules, path, platform, version_info
 from zipfile import ZipFile
 
@@ -168,10 +169,15 @@ class TestProject:
 
         extension_name = "c_abi_bundle_extension.pyd" if platform == "win32" else "c_abi_bundle_extension.so"
         shared_library = shared_library_name("c_abi_library")
+        manifest_path = package_dir / "lib" / "hatch-rs-artifacts.json"
         assert (package_dir / extension_name).exists()
         assert (package_dir / "lib" / shared_library).exists()
+        assert (package_dir / "include" / "c_abi_library.h").exists()
+        assert manifest_path.exists()
         assert not (project_root / "target").exists()
         assert not (project_root / "rust" / "target").exists()
+        if platform == "win32":
+            assert list((package_dir / "lib").glob("*.lib")) or list((package_dir / "lib").glob("*.dll.a"))
 
         # dist
         check_call(
@@ -189,8 +195,16 @@ class TestProject:
         wheel_path = next((project_root / "dist").glob("*.whl"))
         with ZipFile(wheel_path) as wheel:
             wheel_names = set(wheel.namelist())
+            artifact_manifest = loads(wheel.read("c_abi_bundle_project/lib/hatch-rs-artifacts.json"))
         assert f"c_abi_bundle_project/{extension_name}" in wheel_names
         assert f"c_abi_bundle_project/lib/{shared_library}" in wheel_names
+        assert "c_abi_bundle_project/include/c_abi_library.h" in wheel_names
+        assert "c_abi_bundle_project/lib/hatch-rs-artifacts.json" in wheel_names
+        c_abi_records = [record for record in artifact_manifest["artifacts"] if record["name"] == "c-abi"]
+        assert any(record["role"] == "shared-library" for record in c_abi_records)
+        assert any(record["destination"] == f"c_abi_bundle_project/lib/{shared_library}" for record in c_abi_records)
+        if platform == "win32":
+            assert any(record["role"] == "import-library" for record in c_abi_records)
 
         # import
         here = Path(__file__).parent / project_folder
@@ -199,3 +213,84 @@ class TestProject:
 
         assert c_abi_bundle_project.extension_answer() == 42
         assert c_abi_bundle_project.shared_answer() == 7
+
+    def test_generated_file_and_header_artifacts(self):
+        project_folder = "test_project_generated_files"
+        project_root = Path("hatch_rs/tests") / project_folder
+        package_dir = project_root / "generated_files_project"
+
+        # cleanup
+        rmtree(project_root / "dist", ignore_errors=True)
+        rmtree(project_root / "build", ignore_errors=True)
+        rmtree(package_dir / "generated", ignore_errors=True)
+        rmtree(package_dir / "include", ignore_errors=True)
+        modules.pop("generated_files_project", None)
+
+        # generate files
+        check_call(
+            [
+                "hatchling",
+                "build",
+                "--hooks-only",
+            ],
+            cwd=project_root,
+            env=_subprocess_env(),
+        )
+
+        assert (package_dir / "generated" / "package.txt").read_text() == "generated package data\n"
+        assert (project_root / "build" / "generated" / "validated.txt").exists()
+        assert "generated_files_project_answer" in (package_dir / "include" / "generated_files_project.h").read_text()
+
+        # dist
+        check_call(
+            [
+                executable,
+                "-m",
+                "build",
+                "-w",
+                "-n",
+            ],
+            cwd=project_root,
+            env=_subprocess_env(),
+        )
+
+        wheel_path = next((project_root / "dist").glob("*.whl"))
+        with ZipFile(wheel_path) as wheel:
+            wheel_names = set(wheel.namelist())
+        assert "generated_files_project/generated/package.txt" in wheel_names
+        assert not any(name.endswith("build/generated/validated.txt") for name in wheel_names)
+        assert any(name.endswith(".data/data/include/generated_files_project/generated_files_project.h") for name in wheel_names)
+
+        # import
+        here = Path(__file__).parent / project_folder
+        path.insert(0, str(here))
+        import generated_files_project
+
+        assert generated_files_project.generated_text() == "generated package data"
+
+    def test_c_abi_symbol_validation_failure(self):
+        project_folder = "test_project_c_abi_validation_failure"
+        project_root = Path("hatch_rs/tests") / project_folder
+        package_dir = project_root / "validation_failure_project"
+
+        # cleanup
+        rmtree(project_root / "dist", ignore_errors=True)
+        rmtree(project_root / "target", ignore_errors=True)
+        rmtree(package_dir / "lib", ignore_errors=True)
+
+        completed = run(
+            [
+                "hatchling",
+                "build",
+                "--hooks-only",
+            ],
+            cwd=project_root,
+            env=_subprocess_env(),
+            stderr=STDOUT,
+            stdout=PIPE,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode != 0
+        assert "validation_failure_missing_symbol" in completed.stdout

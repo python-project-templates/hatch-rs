@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from json import loads
 from pathlib import Path, PureWindowsPath
 
 import pytest
@@ -216,3 +217,243 @@ def test_build_plan_uses_explicit_target_for_shared_library_name(tmp_path):
     copied = tmp_path / "project" / "lib" / "libproject_ffi.dylib"
     assert copied.read_bytes() == b"shared library"
     assert plan.libraries == ["project/lib/libproject_ffi.dylib"]
+
+
+def test_build_plan_processes_generated_outputs(tmp_path):
+    package_source = tmp_path / "project" / "generated" / "package.txt"
+    shared_source = tmp_path / "project" / "include" / "project.h"
+    validated_source = tmp_path / "project" / "generated" / "validated.txt"
+    package_source.parent.mkdir(parents=True)
+    shared_source.parent.mkdir(parents=True)
+    package_source.write_text("package output")
+    shared_source.write_text("shared output")
+    validated_source.write_text("validated output")
+
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        artifacts=[
+            {
+                "name": "generated-files",
+                "kind": "command",
+                "command": ["python", "-c", "print('already generated')"],
+                "outputs": [
+                    {"source": "project/generated/package.txt", "destination": "project/generated/package.txt"},
+                    {
+                        "source": "project/include/project.h",
+                        "destination": "include/project/project.h",
+                        "install-scheme": "shared-data",
+                    },
+                    {"source": "project/generated/validated.txt", "install-scheme": "validate-only"},
+                ],
+            }
+        ],
+    )
+    plan.generate()
+    plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
+
+    assert plan.copied_artifacts[0].distribution_path == "project/generated/package.txt"
+    assert plan.shared_data == {str(shared_source.resolve()): "include/project/project.h"}
+    assert plan.libraries == []
+
+
+def test_build_plan_missing_generated_output_fails_clearly(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        artifacts=[
+            {
+                "name": "missing-header",
+                "kind": "header",
+                "source": "project/include/project.h",
+            }
+        ],
+    )
+    plan.generate()
+
+    with pytest.raises(FileNotFoundError, match="missing-header"):
+        plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
+
+
+def test_build_plan_generates_cbindgen_command(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        artifacts=[
+            {
+                "name": "project-header",
+                "kind": "header",
+                "generator": "cbindgen",
+                "crate": "rust",
+                "config": "rust/cbindgen.toml",
+                "language": "C++",
+                "output": "project/include/project.h",
+                "destination": "include/project/project.h",
+                "verify": True,
+            }
+        ],
+    )
+
+    assert plan.generate() == ["cbindgen --config rust/cbindgen.toml --lang c++ --output project/include/project.h --verify rust"]
+
+
+def test_build_plan_validates_expected_header_strings(tmp_path):
+    header = tmp_path / "project" / "include" / "project.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define PROJECT_ABI_VERSION 1\nint project_ffi_answer(void);\n")
+
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[
+            {
+                "name": "c-abi",
+                "kind": "shared-library",
+                "library": "project_ffi",
+                "expected-headers": ["project/include/project.h"],
+                "expected-abi-strings": ["PROJECT_ABI_VERSION", "project_ffi_answer"],
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "target" / "x86_64-unknown-linux-gnu" / "release" / "libproject_ffi.so"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"shared library")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    assert (tmp_path / "project" / "lib" / "libproject_ffi.so").read_bytes() == b"shared library"
+
+
+def test_build_plan_missing_expected_header_string_fails_clearly(tmp_path):
+    header = tmp_path / "project" / "include" / "project.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("int project_ffi_answer(void);\n")
+
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[
+            {
+                "name": "c-abi",
+                "kind": "shared-library",
+                "library": "project_ffi",
+                "expected-headers": ["project/include/project.h"],
+                "expected-abi-strings": ["PROJECT_ABI_VERSION"],
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "target" / "x86_64-unknown-linux-gnu" / "release" / "libproject_ffi.so"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"shared library")
+
+    with pytest.raises(RuntimeError, match="PROJECT_ABI_VERSION"):
+        plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+
+def test_build_plan_copies_windows_import_library(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-pc-windows-msvc",
+        artifacts=[
+            {
+                "name": "c-abi",
+                "kind": "shared-library",
+                "library": "project_ffi",
+                "destination": "{module}/lib/{shared_library}",
+                "include-import-lib": True,
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    target_path = tmp_path / "target" / "x86_64-pc-windows-msvc" / "release"
+    target_path.mkdir(parents=True)
+    (target_path / "project_ffi.dll").write_bytes(b"shared library")
+    (target_path / "project_ffi.dll.lib").write_bytes(b"import library")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    assert (tmp_path / "project" / "lib" / "project_ffi.dll").read_bytes() == b"shared library"
+    assert (tmp_path / "project" / "lib" / "project_ffi.dll.lib").read_bytes() == b"import library"
+    assert plan.libraries == ["project/lib/project_ffi.dll"]
+
+
+def test_build_plan_copies_windows_import_library_from_deps(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-pc-windows-msvc",
+        artifacts=[
+            {
+                "name": "c-abi",
+                "kind": "shared-library",
+                "library": "project_ffi",
+                "destination": "{module}/lib/{shared_library}",
+                "include-import-lib": True,
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    target_path = tmp_path / "target" / "x86_64-pc-windows-msvc" / "release"
+    deps_path = target_path / "deps"
+    deps_path.mkdir(parents=True)
+    (target_path / "project_ffi.dll").write_bytes(b"shared library")
+    (deps_path / "project_ffi-1234567890abcdef.dll.lib").write_bytes(b"import library")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    assert (tmp_path / "project" / "lib" / "project_ffi.dll").read_bytes() == b"shared library"
+    assert (tmp_path / "project" / "lib" / "project_ffi.dll.lib").read_bytes() == b"import library"
+    assert plan.libraries == ["project/lib/project_ffi.dll"]
+
+
+def test_build_plan_writes_artifact_manifest(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifact_manifest=True,
+        artifacts=[
+            {
+                "name": "c-abi",
+                "kind": "shared-library",
+                "manifest": "rust/Cargo.toml",
+                "library": "project_ffi",
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "rust" / "target" / "x86_64-unknown-linux-gnu" / "release" / "libproject_ffi.so"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"shared library")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+    plan._write_artifact_manifest(build_root=tmp_path)
+
+    manifest_path = tmp_path / "project" / "lib" / "hatch-rs-artifacts.json"
+    payload = loads(manifest_path.read_text())
+    assert payload["module"] == "project"
+    assert payload["artifacts"] == [
+        {
+            "destination": "project/lib/libproject_ffi.so",
+            "install_scheme": "package",
+            "kind": "shared-library",
+            "manifest": "rust/Cargo.toml",
+            "name": "c-abi",
+            "platform": "linux",
+            "profile": "release",
+            "role": "shared-library",
+            "source": "rust/target/x86_64-unknown-linux-gnu/release/libproject_ffi.so",
+            "target": "x86_64-unknown-linux-gnu",
+        }
+    ]
+    assert plan.copied_artifacts[-1].distribution_path == "project/lib/hatch-rs-artifacts.json"
