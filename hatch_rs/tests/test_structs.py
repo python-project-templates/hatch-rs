@@ -5,7 +5,7 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from hatch_rs.structs import HatchRustBuildPlan, python_extension_name, resolve_target_triple, shared_library_name
+from hatch_rs.structs import HatchRustBuildPlan, python_extension_name, resolve_target_triple, shared_library_name, wheel_tag
 
 
 @pytest.mark.parametrize(
@@ -20,6 +20,11 @@ from hatch_rs.structs import HatchRustBuildPlan, python_extension_name, resolve_
         ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
         ("linux", "i686", "i686-unknown-linux-gnu"),
         ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
+        ("linux", "armv7l", "armv7-unknown-linux-gnueabihf"),
+        ("linux", "ppc64le", "powerpc64le-unknown-linux-gnu"),
+        ("linux", "s390x", "s390x-unknown-linux-gnu"),
+        ("linux", "riscv64", "riscv64gc-unknown-linux-gnu"),
+        ("musllinux_1_2_x86_64", "x86_64", "x86_64-unknown-linux-musl"),
     ],
 )
 def test_resolve_target_triple(platform: str, machine: str, expected: str):
@@ -30,12 +35,49 @@ def test_resolve_target_triple_uses_explicit_target():
     assert resolve_target_triple("wasm32-unknown-unknown", platform="linux", machine="x86_64") == "wasm32-unknown-unknown"
 
 
+def test_resolve_target_triple_uses_explicit_musl_target():
+    assert resolve_target_triple("aarch64-unknown-linux-musl", platform="linux", machine="x86_64") == "aarch64-unknown-linux-musl"
+
+
+def test_resolve_target_triple_rejects_wheel_platform_tag_as_rust_target():
+    with pytest.raises(ValueError, match="manylinux.*wheel platform tags"):
+        resolve_target_triple("x86_64-manylinux_2_28")
+
+
+def test_resolve_target_triple_rejects_macos_universal2_as_rust_target():
+    with pytest.raises(ValueError, match="universal2"):
+        resolve_target_triple(platform="darwin", machine="universal2")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"abi3": True, "target": "x86_64-unknown-linux-gnu"}, "cp311-abi3-linux_x86_64"),
+        ({"target": "aarch64-apple-darwin"}, "cp311-cp311-macosx_11_0_arm64"),
+        ({"target": "x86_64-pc-windows-msvc"}, "cp311-cp311-win_amd64"),
+        ({"abi3": True, "target": "aarch64-unknown-linux-musl"}, "cp311-abi3-musllinux_1_2_aarch64"),
+        ({"target": "x86_64-unknown-linux-gnu", "platform_tag": "manylinux_2_28_x86_64"}, "cp311-cp311-manylinux_2_28_x86_64"),
+    ],
+)
+def test_wheel_tag_uses_packaging_tags(monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, object], expected: str):
+    monkeypatch.delenv("AUDITWHEEL_PLAT", raising=False)
+    assert wheel_tag(python_version=(3, 11), **kwargs) == expected
+
+
+def test_wheel_tag_uses_auditwheel_platform(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AUDITWHEEL_PLAT", "manylinux_2_28_x86_64")
+
+    assert wheel_tag(target="x86_64-unknown-linux-gnu", python_version=(3, 11)) == "cp311-cp311-manylinux_2_28_x86_64"
+
+
 @pytest.mark.parametrize(
     ("platform", "expected"),
     [
         ("win32", "mylib.dll"),
         ("darwin", "libmylib.dylib"),
         ("linux", "libmylib.so"),
+        ("manylinux_2_28_x86_64", "libmylib.so"),
+        ("musllinux_1_2_x86_64", "libmylib.so"),
     ],
 )
 def test_shared_library_name(platform: str, expected: str):

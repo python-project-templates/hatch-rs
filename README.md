@@ -112,5 +112,44 @@ command = ["python", "scripts/validate_abi.py", "{destination}", "{header}"]
 `include-import-lib` only packages an import library on Windows targets, where
 Cargo emits `.dll.lib` or `.dll.a` files for downstream native linkers.
 
+### Platform tags and cibuildwheel
+
+Binary wheel tags are generated with `packaging.tags` from the resolved Rust
+target. Linux builds default to `linux_<arch>` unless `AUDITWHEEL_PLAT` is set
+by auditwheel/cibuildwheel or `wheel-platform-tag` is configured explicitly.
+Rust targets should use concrete triples such as `x86_64-unknown-linux-gnu` or
+`x86_64-unknown-linux-musl`; manylinux and musllinux are wheel platform tags,
+not Rust target triples.
+
+For cibuildwheel, keep Cargo outputs isolated so repeated platform builds do not
+reuse stale artifacts from another target:
+
+```toml
+[tool.hatch.build.hooks.hatch-rs]
+module = "project"
+target-dir = "isolated"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "python-extension"
+kind = "python-extension"
+manifest = "Cargo.toml"
+library = "project"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "c-abi"
+kind = "shared-library"
+manifest = "rust/Cargo.toml"
+library = "project_ffi"
+crate-type = "cdylib"
+destination = "project/lib/{shared_library}"
+
+[tool.cibuildwheel]
+build = "cp311-*"
+test-command = "python -c \"import project\""
+```
+
+When cross-building outside cibuildwheel, set `wheel-platform-tag` only if the
+final wheel platform tag is known, for example `manylinux_2_28_x86_64`.
+
 > [!NOTE]
 > This library was generated using [copier](https://copier.readthedocs.io/en/stable/) from the [Base Python Project Template repository](https://github.com/python-project-templates/base).
