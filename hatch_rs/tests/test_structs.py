@@ -100,7 +100,9 @@ def test_python_extension_name(source_stem: str, platform: str, abi3: bool, expe
 def test_build_plan_generates_cargo_invocation(tmp_path):
     plan = HatchRustBuildPlan(module="project", path=tmp_path, target="x86_64-apple-darwin")
 
-    assert plan.generate() == ["cargo rustc --release --target x86_64-apple-darwin -- -C link-arg=-undefined -C link-arg=dynamic_lookup"]
+    assert plan.generate() == [
+        "cargo rustc --release --target x86_64-apple-darwin -- -C link-arg=-undefined -C link-arg=dynamic_lookup --crate-type cdylib"
+    ]
 
 
 def test_build_plan_generates_manifest_and_cargo_options(tmp_path):
@@ -131,7 +133,7 @@ def test_build_plan_generates_portable_manifest_path_display(tmp_path):
         target="x86_64-unknown-linux-gnu",
     )
 
-    assert plan.generate() == ["cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu"]
+    assert plan.generate() == ["cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib"]
 
 
 def test_build_plan_project_target_dir_sets_cargo_env(tmp_path):
@@ -179,17 +181,13 @@ def test_build_plan_generates_explicit_artifacts(tmp_path):
         target_dir="isolated",
         artifacts=[
             {
-                "name": "python-extension",
-                "kind": "python-extension",
+                "name": "project",
                 "manifest": "Cargo.toml",
-                "library": "project",
+                "destination": "{module}/{python_extension_name}",
             },
             {
-                "name": "c-abi",
-                "kind": "shared-library",
+                "name": "project_ffi",
                 "manifest": "rust/Cargo.toml",
-                "library": "project_ffi",
-                "crate-type": "cdylib",
                 "destination": "{module}/lib/{shared_library}",
                 "rustc-args": ["-C", "opt-level=3"],
             },
@@ -197,7 +195,7 @@ def test_build_plan_generates_explicit_artifacts(tmp_path):
     )
 
     assert plan.generate() == [
-        "cargo rustc --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu",
+        "cargo rustc --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
         "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- -C opt-level=3 --crate-type cdylib",
     ]
 
@@ -215,9 +213,7 @@ def test_build_plan_copies_shared_library_to_tokenized_destination(tmp_path):
         target="x86_64-unknown-linux-gnu",
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
-                "library": "project_ffi",
+                "name": "project_ffi",
                 "destination": "{module}/lib/{target}/{profile}/{shared_library}",
             }
         ],
@@ -242,9 +238,7 @@ def test_build_plan_uses_explicit_target_for_shared_library_name(tmp_path):
         target="aarch64-apple-darwin",
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
-                "library": "project_ffi",
+                "name": "project_ffi",
             }
         ],
     )
@@ -277,7 +271,6 @@ def test_build_plan_processes_generated_outputs(tmp_path):
         artifacts=[
             {
                 "name": "generated-files",
-                "kind": "command",
                 "command": ["python", "-c", "print('already generated')"],
                 "outputs": [
                     {"source": "project/generated/package.txt", "destination": "project/generated/package.txt"},
@@ -306,8 +299,7 @@ def test_build_plan_missing_generated_output_fails_clearly(tmp_path):
         artifacts=[
             {
                 "name": "missing-header",
-                "kind": "header",
-                "source": "project/include/project.h",
+                "outputs": [{"source": "project/include/project.h", "install-scheme": "shared-data"}],
             }
         ],
     )
@@ -324,14 +316,18 @@ def test_build_plan_generates_cbindgen_command(tmp_path):
         artifacts=[
             {
                 "name": "project-header",
-                "kind": "header",
                 "generator": "cbindgen",
                 "crate": "rust",
                 "config": "rust/cbindgen.toml",
                 "language": "C++",
-                "output": "project/include/project.h",
-                "destination": "include/project/project.h",
                 "verify": True,
+                "outputs": [
+                    {
+                        "source": "project/include/project.h",
+                        "destination": "include/project/project.h",
+                        "install-scheme": "shared-data",
+                    }
+                ],
             }
         ],
     )
@@ -350,9 +346,7 @@ def test_build_plan_validates_expected_header_strings(tmp_path):
         target="x86_64-unknown-linux-gnu",
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
-                "library": "project_ffi",
+                "name": "project_ffi",
                 "expected-headers": ["project/include/project.h"],
                 "expected-abi-strings": ["PROJECT_ABI_VERSION", "project_ffi_answer"],
             }
@@ -380,9 +374,7 @@ def test_build_plan_missing_expected_header_string_fails_clearly(tmp_path):
         target="x86_64-unknown-linux-gnu",
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
-                "library": "project_ffi",
+                "name": "project_ffi",
                 "expected-headers": ["project/include/project.h"],
                 "expected-abi-strings": ["PROJECT_ABI_VERSION"],
             }
@@ -405,9 +397,7 @@ def test_build_plan_copies_windows_import_library(tmp_path):
         target="x86_64-pc-windows-msvc",
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
-                "library": "project_ffi",
+                "name": "project_ffi",
                 "destination": "{module}/lib/{shared_library}",
                 "include-import-lib": True,
             }
@@ -434,9 +424,7 @@ def test_build_plan_copies_windows_import_library_from_deps(tmp_path):
         target="x86_64-pc-windows-msvc",
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
-                "library": "project_ffi",
+                "name": "project_ffi",
                 "destination": "{module}/lib/{shared_library}",
                 "include-import-lib": True,
             }
@@ -465,10 +453,8 @@ def test_build_plan_writes_artifact_manifest(tmp_path):
         artifact_manifest=True,
         artifacts=[
             {
-                "name": "c-abi",
-                "kind": "shared-library",
+                "name": "project_ffi",
                 "manifest": "rust/Cargo.toml",
-                "library": "project_ffi",
             }
         ],
     )
@@ -488,12 +474,12 @@ def test_build_plan_writes_artifact_manifest(tmp_path):
         {
             "destination": "project/lib/libproject_ffi.so",
             "install_scheme": "package",
-            "kind": "shared-library",
+            "crate_type": "cdylib",
             "manifest": "rust/Cargo.toml",
-            "name": "c-abi",
+            "name": "project_ffi",
             "platform": "linux",
             "profile": "release",
-            "role": "shared-library",
+            "role": "cdylib",
             "source": "rust/target/x86_64-unknown-linux-gnu/release/libproject_ffi.so",
             "target": "x86_64-unknown-linux-gnu",
         }

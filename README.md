@@ -18,12 +18,13 @@ path = "."
 module = "project"
 ```
 
-### Shared C ABI libraries
+### Rust artifacts and C ABI libraries
 
-Projects can declare multiple Rust artifacts in one hook. A `python-extension`
-artifact keeps the existing PyO3 extension flow, while a `shared-library`
-artifact builds a standalone `cdylib`, copies the exact platform library name to
-the configured destination, and includes it in the wheel.
+Projects can declare multiple Rust artifacts in one hook. Artifact `name` is the
+Cargo output stem used for exact file discovery, and `crate-type` defaults to
+`cdylib`. A destination containing `{python_extension_name}` packages that
+`cdylib` as a Python extension module; other Rust artifact destinations package
+the platform shared library name for standalone C ABI consumers.
 
 ```toml
 [tool.hatch.build.hooks.hatch-rs]
@@ -33,35 +34,30 @@ module = "project"
 target-dir = "isolated"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "python-extension"
-kind = "python-extension"
+name = "project"
 manifest = "Cargo.toml"
-library = "project"
+destination = "project/{python_extension_name}"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "c-abi"
-kind = "shared-library"
+name = "project_ffi"
 manifest = "rust/Cargo.toml"
-library = "project_ffi"
-crate-type = "cdylib"
 destination = "project/lib/{shared_library}"
 ```
 
-Destination templates support `{module}`, `{target}`, `{profile}`, `{library}`,
-`{shared_library}`, and `{python_extension_name}`.
+Destination templates support `{module}`, `{target}`, `{profile}`, `{name}`,
+`{shared_library}`, `{import_library}`, and `{python_extension_name}`.
 
 ### Generated files and headers
 
-`command` artifacts run an argv-list command and then validate explicit outputs.
-Outputs can be packaged into the wheel, installed as wheel shared data, or used
-only as required validation checks. `header` artifacts are a typed shorthand for
-validated header outputs and can also use `generator = "cbindgen"` in CLI or
-build-script mode.
+Artifacts with `command` run an argv-list command and then validate explicit
+outputs. Outputs can be packaged into the wheel, installed as wheel shared data,
+or used only as required validation checks. The same `outputs` table can be used
+for generated headers, either on a command artifact or on the Rust artifact whose
+build produced the file.
 
 ```toml
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
 name = "generated-package-files"
-kind = "command"
 command = ["python", "scripts/write_generated_files.py"]
 inputs = ["scripts/write_generated_files.py"]
 
@@ -72,7 +68,8 @@ install-scheme = "package"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
 name = "public-c-header"
-kind = "header"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts.outputs]]
 source = "project/include/project.h"
 destination = "include/project/project.h"
 install-scheme = "shared-data"
@@ -80,11 +77,11 @@ install-scheme = "shared-data"
 
 ### ABI validation and artifact metadata
 
-Shared-library artifacts can validate the copied C ABI library before the wheel
-is finalized. The hook can check expected exported symbols, verify headers and
-ABI strings/macros, load the copied library with `ctypes.CDLL`, run project
-validation commands, include Windows import libraries, and emit a package-local
-artifact manifest.
+`cdylib` artifacts can validate the copied C ABI library before the wheel is
+finalized. The hook can check expected exported symbols, verify headers and ABI
+strings/macros, load the copied library with `ctypes.CDLL` when `validate = true`,
+run project validation commands, include Windows import libraries, and emit a
+package-local artifact manifest.
 
 ```toml
 [tool.hatch.build.hooks.hatch-rs]
@@ -93,16 +90,13 @@ target-dir = "isolated"
 artifact-manifest = true
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "c-abi"
-kind = "shared-library"
+name = "project_ffi"
 manifest = "rust/Cargo.toml"
-library = "project_ffi"
-crate-type = "cdylib"
 destination = "project/lib/{shared_library}"
 expected-symbols = ["project_ffi_answer"]
 expected-headers = ["project/include/project.h"]
 expected-abi-strings = ["PROJECT_ABI_VERSION"]
-runtime-load = true
+validate = true
 include-import-lib = true
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts.validation-commands]]
@@ -130,17 +124,13 @@ module = "project"
 target-dir = "isolated"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "python-extension"
-kind = "python-extension"
+name = "project"
 manifest = "Cargo.toml"
-library = "project"
+destination = "project/{python_extension_name}"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "c-abi"
-kind = "shared-library"
+name = "project_ffi"
 manifest = "rust/Cargo.toml"
-library = "project_ffi"
-crate-type = "cdylib"
 destination = "project/lib/{shared_library}"
 
 [tool.cibuildwheel]

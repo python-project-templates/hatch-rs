@@ -33,7 +33,6 @@ __all__ = (
     "wheel_tag",
 )
 
-ArtifactKind = Literal["python-extension", "shared-library", "command", "header"]
 BuildType = Literal["debug", "release"]
 CargoTargetKind = Literal["lib", "bin", "example", "test", "bench"]
 CbindgenMode = Literal["cli", "build-script"]
@@ -392,8 +391,7 @@ class RustArtifactConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    name: Optional[str] = Field(default=None, description="Human-readable artifact name used in errors.")
-    kind: ArtifactKind = Field(default="python-extension", description="Kind of artifact to build and package.")
+    name: Optional[str] = Field(default=None, description="Cargo artifact name used for exact artifact discovery and errors.")
     manifest: Optional[Path] = Field(default=None, description="Path to Cargo.toml, relative to the hook path unless absolute.")
     build_type: Optional[BuildType] = Field(default=None, alias="build-type")
     profile: Optional[str] = Field(default=None, description="Cargo profile for this artifact.")
@@ -401,8 +399,7 @@ class RustArtifactConfig(BaseModel):
     package: Optional[str] = Field(default=None, description="Cargo package selector.")
     cargo_target_kind: Optional[CargoTargetKind] = Field(default=None, alias="cargo-target-kind", description="Cargo target selector kind.")
     cargo_target: Optional[str] = Field(default=None, alias="cargo-target", description="Cargo target selector name.")
-    library: Optional[str] = Field(default=None, description="Cargo library name used for exact artifact discovery.")
-    crate_type: Optional[str] = Field(default=None, alias="crate-type", description="Rust crate type to pass through to rustc.")
+    crate_type: str = Field(default="cdylib", alias="crate-type", description="Rust crate type to pass through to rustc.")
     destination: Optional[str] = Field(default=None, description="Wheel-relative destination template for the copied artifact.")
     search_deps: bool = Field(default=False, alias="search-deps", description="Search target/<triple>/<profile>/deps even if a root artifact exists.")
     features: Optional[List[str]] = Field(default=None, description="Cargo features to enable for this artifact.")
@@ -425,10 +422,6 @@ class RustArtifactConfig(BaseModel):
     crate: Optional[str] = Field(default=None, description="Rust crate path for cbindgen CLI mode.")
     config: Optional[Path] = Field(default=None, description="Generator config path, such as cbindgen.toml.")
     language: Optional[str] = Field(default=None, description="Generator language, such as C, C++, or Cython.")
-    output: Optional[Path] = Field(default=None, description="Generated header output path for header artifacts.")
-    source: Optional[Path] = Field(default=None, description="Existing/generated header source path for header artifacts.")
-    install_scheme: Optional[InstallScheme] = Field(default=None, alias="install-scheme", description="Header output install scheme.")
-    required: bool = Field(default=True, description="Whether a header source must exist after generation.")
     verify: bool = Field(default=False, description="Run a generator in verification mode when supported.")
     cbindgen_mode: CbindgenMode = Field(default="cli", alias="cbindgen-mode", description="How cbindgen headers are produced.")
     cpp_compat: bool = Field(default=False, alias="cpp-compat", description="Reserved for cbindgen C++ compatibility presets.")
@@ -440,7 +433,7 @@ class RustArtifactConfig(BaseModel):
         alias="expected-abi-strings",
         description="ABI version strings or macros expected in the configured headers.",
     )
-    runtime_load: bool = Field(default=False, alias="runtime-load", description="Load the copied library with ctypes.CDLL after copy.")
+    validate_artifact: bool = Field(default=False, alias="validate", description="Load the copied library with ctypes.CDLL after copy.")
     validation_commands: List[ValidationCommandConfig] = Field(
         default_factory=list,
         alias="validation-commands",
@@ -522,7 +515,7 @@ class RustArtifactConfig(BaseModel):
             return [{"command": values}]
         return list(values)
 
-    @field_validator("working_directory", "config", "output", "source", "depfile", mode="before")
+    @field_validator("working_directory", "config", "depfile", mode="before")
     @classmethod
     def validate_optional_path(cls, path: Optional[Path]) -> Optional[Path]:
         if path is None:
@@ -661,10 +654,30 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     def _configured_artifacts(self) -> list[RustArtifactConfig]:
         if self.artifacts:
             return list(self.artifacts)
-        return [RustArtifactConfig(name="python-extension", kind="python-extension")]
+        return [RustArtifactConfig(destination=f"{self.module}/{{python_extension_name}}")]
 
     def _artifact_label(self, artifact: RustArtifactConfig) -> str:
-        return artifact.name or artifact.library or artifact.kind
+        return artifact.name or artifact.destination or "artifact"
+
+    def _artifact_name(self, artifact: RustArtifactConfig) -> str:
+        if not artifact.name:
+            raise ValueError(f"Artifact '{self._artifact_label(artifact)}' must set name for exact cdylib discovery.")
+        return artifact.name
+
+    def _is_generated_artifact(self, artifact: RustArtifactConfig) -> bool:
+        if artifact.command is not None or artifact.generator is not None:
+            return True
+        return bool(artifact.outputs) and artifact.destination is None and artifact.manifest is None
+
+    def _is_python_extension_artifact(self, artifact: RustArtifactConfig) -> bool:
+        return artifact.destination is not None and "{python_extension_name}" in artifact.destination
+
+    def _artifact_role(self, artifact: RustArtifactConfig) -> str:
+        if self._is_generated_artifact(artifact):
+            return "generated-output"
+        if self._is_python_extension_artifact(artifact):
+            return "python-extension"
+        return artifact.crate_type
 
     def _artifact_manifest(self, artifact: RustArtifactConfig) -> Optional[Path]:
         return artifact.manifest if artifact.manifest is not None else self.manifest
@@ -735,9 +748,6 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         build_command.append(artifact.cargo_target)
 
     def _build_artifact_plan(self, artifact: RustArtifactConfig, *, global_target: Optional[str]) -> PlannedArtifact:
-        if artifact.kind == "shared-library" and not artifact.library:
-            raise ValueError(f"Shared-library artifact '{self._artifact_label(artifact)}' must set library.")
-
         resolved_target = _resolve_target(artifact.target if artifact.target is not None else global_target)
         profile = self._artifact_profile(artifact)
         manifest = self._artifact_manifest(artifact)
@@ -766,10 +776,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         build_command.extend(self._artifact_cargo_args(artifact))
 
         rustc_args = []
-        if artifact.kind == "python-extension" and "apple" in resolved_target.triple:
+        if self._is_python_extension_artifact(artifact) and "apple" in resolved_target.triple:
             rustc_args.extend(("-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"))
         rustc_args.extend(self._artifact_rustc_args(artifact))
-        if artifact.crate_type and "--crate-type" not in rustc_args:
+        if "--crate-type" not in rustc_args:
             rustc_args.extend(("--crate-type", artifact.crate_type))
         if rustc_args:
             build_command.append("--")
@@ -802,9 +812,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return normalized
 
     def _build_cbindgen_command(self, artifact: RustArtifactConfig) -> list[str]:
-        output = artifact.output or artifact.source
-        if output is None:
-            raise ValueError(f"cbindgen artifact '{self._artifact_label(artifact)}' must set output or source.")
+        outputs = self._artifact_outputs(artifact)
+        if not outputs:
+            raise ValueError(f"cbindgen artifact '{self._artifact_label(artifact)}' must declare an output.")
+        output = outputs[0].source
 
         command = ["cbindgen"]
         if artifact.config is not None:
@@ -828,10 +839,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         target_dir, set_target_dir_env = self._resolve_target_dir(manifest, self._artifact_env(artifact))
 
         command = artifact.command
-        if artifact.kind == "header" and artifact.generator == "cbindgen" and artifact.cbindgen_mode == "cli" and command is None:
+        if artifact.generator == "cbindgen" and artifact.cbindgen_mode == "cli" and command is None:
             command = self._build_cbindgen_command(artifact)
-        elif artifact.kind == "command" and command is None:
-            raise ValueError(f"Command artifact '{self._artifact_label(artifact)}' must set command.")
 
         invocation = None
         if command is not None:
@@ -862,13 +871,13 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
         global_target = self.target
         for artifact in self._configured_artifacts():
-            if artifact.kind in ("python-extension", "shared-library"):
-                planned_artifact = self._build_artifact_plan(artifact, global_target=global_target)
-            else:
+            if self._is_generated_artifact(artifact):
                 planned_artifact = self._build_command_artifact_plan(artifact, global_target=global_target)
+            else:
+                planned_artifact = self._build_artifact_plan(artifact, global_target=global_target)
             self._artifact_plans.append(planned_artifact)
             if planned_artifact.invocation is not None:
-                if artifact.kind in ("python-extension", "shared-library"):
+                if not self._is_generated_artifact(artifact):
                     self._cargo_invocations.append(planned_artifact.invocation)
                 self.commands.append(planned_artifact.invocation.display)
 
@@ -943,7 +952,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             "module": self.module,
             "target": planned_artifact.resolved_target.triple,
             "profile": planned_artifact.profile,
-            "library": artifact.library or "",
+            "name": artifact.name or "",
             "shared_library": shared_library,
             "import_library": import_library,
             "python_extension_name": python_extension,
@@ -979,7 +988,6 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         manifest = self._artifact_manifest(artifact)
         record = {
             "name": self._artifact_label(artifact),
-            "kind": artifact.kind,
             "role": role,
             "target": planned_artifact.resolved_target.triple,
             "platform": planned_artifact.resolved_target.platform,
@@ -990,6 +998,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         }
         if manifest is not None:
             record["manifest"] = self._relative_display_path(_resolve_path(manifest, base=Path(self.path)))
+        if not self._is_generated_artifact(artifact):
+            record["crate_type"] = artifact.crate_type
         self._artifact_manifest_records.append(record)
 
     def _copy_artifact(
@@ -1027,8 +1037,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         target_path = self._require_target_path(planned_artifact)
         platform = planned_artifact.resolved_target.platform
 
-        if artifact.library:
-            expected_name = shared_library_name(artifact.library, platform=platform)
+        if artifact.name:
+            expected_name = shared_library_name(artifact.name, platform=platform)
             source = self._find_exact_artifact(target_path, expected_name, search_deps=artifact.search_deps, artifact=artifact)
             template = artifact.destination or f"{self.module}/{{python_extension_name}}"
             distribution_path = self._format_destination(template, planned_artifact=planned_artifact, source=source)
@@ -1064,26 +1074,24 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return copied_artifacts
 
     def _import_library_names(self, artifact: RustArtifactConfig, shared_library: str) -> tuple[str, ...]:
-        if not artifact.library:
-            return ()
+        artifact_name = self._artifact_name(artifact)
 
         candidates = (
             f"{shared_library}.lib",
             f"{shared_library}.a",
-            f"{artifact.library}.dll.lib",
-            f"{artifact.library}.lib",
-            f"lib{artifact.library}.dll.a",
+            f"{artifact_name}.dll.lib",
+            f"{artifact_name}.lib",
+            f"lib{artifact_name}.dll.a",
         )
         return tuple(dict.fromkeys(candidates))
 
     def _import_library_patterns(self, artifact: RustArtifactConfig) -> tuple[tuple[str, str], ...]:
-        if not artifact.library:
-            return ()
+        artifact_name = self._artifact_name(artifact)
 
         return (
-            (f"{artifact.library}-*.dll.lib", f"{artifact.library}.dll.lib"),
-            (f"{artifact.library}-*.lib", f"{artifact.library}.lib"),
-            (f"lib{artifact.library}-*.dll.a", f"lib{artifact.library}.dll.a"),
+            (f"{artifact_name}-*.dll.lib", f"{artifact_name}.dll.lib"),
+            (f"{artifact_name}-*.lib", f"{artifact_name}.lib"),
+            (f"lib{artifact_name}-*.dll.a", f"lib{artifact_name}.dll.a"),
         )
 
     def _find_import_library(self, target_path: Path, artifact: RustArtifactConfig, *, shared_library: str) -> tuple[Path, str]:
@@ -1165,13 +1173,12 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             role="import-library",
         )
 
-    def _copy_shared_library(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
+    def _copy_cdylib(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
         artifact = planned_artifact.artifact
-        if not artifact.library:
-            raise ValueError(f"Shared-library artifact '{self._artifact_label(artifact)}' must set library.")
+        artifact_name = self._artifact_name(artifact)
 
         target_path = self._require_target_path(planned_artifact)
-        shared_library = shared_library_name(artifact.library, platform=planned_artifact.resolved_target.platform)
+        shared_library = shared_library_name(artifact_name, platform=planned_artifact.resolved_target.platform)
         source = self._find_exact_artifact(target_path, shared_library, search_deps=artifact.search_deps, artifact=artifact)
         template = artifact.destination or f"{self.module}/lib/{{shared_library}}"
         distribution_path = self._format_destination(
@@ -1187,7 +1194,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 build_root=build_root,
                 is_library=True,
                 planned_artifact=planned_artifact,
-                role="shared-library",
+                role=artifact.crate_type,
             )
         ]
         import_library = self._copy_import_library(
@@ -1201,22 +1208,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return copied_artifacts
 
     def _artifact_outputs(self, artifact: RustArtifactConfig) -> list[GeneratedOutputConfig]:
-        if artifact.outputs:
-            return list(artifact.outputs)
-        if artifact.kind != "header":
-            return []
-
-        source = artifact.source or artifact.output
-        if source is None:
-            raise ValueError(f"Header artifact '{self._artifact_label(artifact)}' must set source, output, or outputs.")
-        return [
-            GeneratedOutputConfig(
-                source=source,
-                destination=artifact.destination,
-                install_scheme=artifact.install_scheme or "shared-data",
-                required=artifact.required,
-            )
-        ]
+        return list(artifact.outputs)
 
     def _validate_inputs(self, artifact: RustArtifactConfig) -> None:
         base = Path(self.path)
@@ -1291,7 +1283,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
     def _validate_library_exports(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact]) -> None:
         artifact = planned_artifact.artifact
-        if not artifact.runtime_load and not artifact.expected_symbols:
+        if not artifact.validate_artifact and not artifact.expected_symbols:
             return
         if not copied_artifacts:
             raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' has no copied library to validate.")
@@ -1301,7 +1293,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             library = CDLL(str(copied_library.destination))
         except OSError as error:
             raise RuntimeError(
-                f"Artifact '{self._artifact_label(artifact)}' failed runtime load check for '{copied_library.distribution_path}': {error}"
+                f"Artifact '{self._artifact_label(artifact)}' failed validation load check for '{copied_library.distribution_path}': {error}"
             ) from error
 
         for symbol in artifact.expected_symbols:
@@ -1313,12 +1305,12 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     def _validation_tokens(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact], headers: list[Path]) -> dict[str, str]:
         artifact = planned_artifact.artifact
         copied_artifact = copied_artifacts[0] if copied_artifacts else None
-        shared_library = shared_library_name(artifact.library, platform=planned_artifact.resolved_target.platform) if artifact.library else ""
+        shared_library = shared_library_name(artifact.name, platform=planned_artifact.resolved_target.platform) if artifact.name else ""
         return {
             "module": self.module,
             "target": planned_artifact.resolved_target.triple,
             "profile": planned_artifact.profile,
-            "library": artifact.library or "",
+            "name": artifact.name or "",
             "shared_library": shared_library,
             "source": str(copied_artifact.source) if copied_artifact else "",
             "destination": str(copied_artifact.destination) if copied_artifact else "",
@@ -1355,7 +1347,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             environment.update(
                 {
                     "HATCH_RS_ARTIFACT_NAME": self._artifact_label(artifact),
-                    "HATCH_RS_ARTIFACT_KIND": artifact.kind,
+                    "HATCH_RS_ARTIFACT_ROLE": self._artifact_role(artifact),
+                    "HATCH_RS_ARTIFACT_CRATE_TYPE": artifact.crate_type,
                     "HATCH_RS_BUILD_ROOT": str(build_root),
                 }
             )
@@ -1380,7 +1373,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 module=self.module,
                 target=self.target or "",
                 profile=self.profile or self.build_type,
-                library="",
+                name="",
                 shared_library="",
                 import_library="",
                 python_extension_name="",
@@ -1408,14 +1401,18 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         self._copied_artifacts.append(CopiedArtifact(source=destination, destination=destination, distribution_path=distribution_path.as_posix()))
 
     def _copy_outputs(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
-        if planned_artifact.artifact.kind == "python-extension":
-            copied_artifacts = self._copy_python_extension(planned_artifact, build_root=build_root)
-        elif planned_artifact.artifact.kind == "shared-library":
-            copied_artifacts = self._copy_shared_library(planned_artifact, build_root=build_root)
-        elif planned_artifact.artifact.kind in ("command", "header"):
-            copied_artifacts = self._process_generated_outputs(planned_artifact, build_root=build_root)
+        artifact = planned_artifact.artifact
+        copied_artifacts = []
+        if self._is_generated_artifact(artifact):
+            copied_artifacts.extend(self._process_generated_outputs(planned_artifact, build_root=build_root))
+        elif self._is_python_extension_artifact(artifact):
+            copied_artifacts.extend(self._copy_python_extension(planned_artifact, build_root=build_root))
+            if artifact.outputs:
+                copied_artifacts.extend(self._process_generated_outputs(planned_artifact, build_root=build_root))
         else:
-            raise ValueError(f"Unsupported artifact kind: {planned_artifact.artifact.kind}")
+            copied_artifacts.extend(self._copy_cdylib(planned_artifact, build_root=build_root))
+            if artifact.outputs:
+                copied_artifacts.extend(self._process_generated_outputs(planned_artifact, build_root=build_root))
         self._validate_artifact(planned_artifact, build_root=build_root, copied_artifacts=copied_artifacts)
         return copied_artifacts
 

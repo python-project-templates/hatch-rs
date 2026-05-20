@@ -43,22 +43,18 @@ target-dir = "isolated"
 artifact-manifest = true
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "python-extension"
-kind = "python-extension"
+name = "c_abi_bundle_extension"
 manifest = "Cargo.toml"
-library = "c_abi_bundle_extension"
+destination = "c_abi_bundle_project/{python_extension_name}"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "c-abi"
-kind = "shared-library"
+name = "c_abi_library"
 manifest = "rust/Cargo.toml"
-library = "c_abi_library"
-crate-type = "cdylib"
 destination = "c_abi_bundle_project/lib/{shared_library}"
 expected-symbols = ["c_abi_library_answer", "c_abi_library_abi_version"]
 expected-headers = ["c_abi_bundle_project/include/c_abi_library.h"]
 expected-abi-strings = ["C_ABI_LIBRARY_ABI_VERSION", "c_abi_library_abi_version"]
-runtime-load = true
+validate = true
 include-import-lib = true
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts.validation-commands]]

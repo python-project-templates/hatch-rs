@@ -35,10 +35,7 @@ module = "validation_failure_project"
 target-dir = "isolated"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "c-abi-validation-failure"
-kind = "shared-library"
+name = "validation_failure"
 manifest = "Cargo.toml"
-library = "validation_failure"
-crate-type = "cdylib"
 destination = "validation_failure_project/lib/{shared_library}"
 expected-symbols = ["validation_failure_missing_symbol"]
