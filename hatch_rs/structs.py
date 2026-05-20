@@ -11,10 +11,11 @@ from re import sub
 from shlex import join as shell_join
 from shutil import copy2
 from subprocess import run
-from sys import platform as sys_platform
+from sys import platform as sys_platform, version_info
 from tempfile import TemporaryDirectory
 from typing import Any, List, Literal, Optional
 
+from packaging.tags import cpython_tags, mac_platforms
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 __all__ = (
@@ -29,6 +30,7 @@ __all__ = (
     "python_extension_name",
     "resolve_target_triple",
     "shared_library_name",
+    "wheel_tag",
 )
 
 ArtifactKind = Literal["python-extension", "shared-library", "command", "header"]
@@ -74,6 +76,107 @@ class CopiedArtifact:
     distribution_path: str
 
 
+WINDOWS_TARGETS = {
+    "x86_64": "x86_64-pc-windows-msvc",
+    "i686": "i686-pc-windows-msvc",
+    "aarch64": "aarch64-pc-windows-msvc",
+}
+
+DARWIN_TARGETS = {
+    "x86_64": "x86_64-apple-darwin",
+    "aarch64": "aarch64-apple-darwin",
+}
+
+LINUX_GNU_TARGETS = {
+    "x86_64": "x86_64-unknown-linux-gnu",
+    "i686": "i686-unknown-linux-gnu",
+    "aarch64": "aarch64-unknown-linux-gnu",
+    "armv7": "armv7-unknown-linux-gnueabihf",
+    "ppc64le": "powerpc64le-unknown-linux-gnu",
+    "s390x": "s390x-unknown-linux-gnu",
+    "riscv64": "riscv64gc-unknown-linux-gnu",
+}
+
+LINUX_MUSL_TARGETS = {
+    "x86_64": "x86_64-unknown-linux-musl",
+    "i686": "i686-unknown-linux-musl",
+    "aarch64": "aarch64-unknown-linux-musl",
+    "armv7": "armv7-unknown-linux-musleabihf",
+}
+
+WHEEL_ARCHES = {
+    "x86_64": "x86_64",
+    "i686": "i686",
+    "aarch64": "aarch64",
+    "armv7": "armv7l",
+    "ppc64le": "ppc64le",
+    "s390x": "s390x",
+    "riscv64": "riscv64",
+}
+
+
+def _normalize_machine(machine: str) -> str:
+    normalized = machine.lower().replace("-", "_")
+    aliases = {
+        "amd64": "x86_64",
+        "x64": "x86_64",
+        "x86": "i686",
+        "i386": "i686",
+        "arm64": "aarch64",
+        "armv7l": "armv7",
+        "powerpc64le": "ppc64le",
+        "riscv64gc": "riscv64",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _target_machine(target: str) -> str:
+    return _normalize_machine(target.split("-", 1)[0])
+
+
+def _normalize_platform(platform: str) -> str:
+    normalized = platform.lower()
+    if normalized.startswith("win"):
+        return "win32"
+    if normalized.startswith("macosx") or normalized == "darwin":
+        return "darwin"
+    if normalized.startswith(("linux", "manylinux", "musllinux")):
+        return "linux"
+    return normalized
+
+
+def _linux_targets_for_platform(platform: str) -> dict[str, str]:
+    if platform.lower().startswith("musllinux"):
+        return LINUX_MUSL_TARGETS
+    return LINUX_GNU_TARGETS
+
+
+def _unsupported_machine(platform: str, machine: str, supported: dict[str, str]) -> ValueError:
+    supported_machines = ", ".join(sorted(supported))
+    return ValueError(f"Unsupported machine type: {machine} for {platform} platform. Supported machines: {supported_machines}.")
+
+
+def _explicit_target(target: str, *, platform: str, machine: str) -> ResolvedTarget:
+    if "manylinux" in target or "musllinux" in target:
+        raise ValueError(
+            "Rust target triples use linux-gnu or linux-musl, not manylinux or musllinux wheel platform tags. "
+            "Use a Rust target such as x86_64-unknown-linux-gnu or x86_64-unknown-linux-musl."
+        )
+    if "universal2" in target:
+        raise ValueError(
+            "macOS universal2 is a wheel strategy, not a Rust target triple. Build x86_64-apple-darwin and "
+            "aarch64-apple-darwin artifacts separately, then combine them with a project-specific step if needed."
+        )
+
+    if target.endswith("-pc-windows-msvc"):
+        return ResolvedTarget(platform="win32", machine=_target_machine(target), triple=target)
+    if target.endswith("-apple-darwin"):
+        return ResolvedTarget(platform="darwin", machine=_target_machine(target), triple=target)
+    if "-linux-" in target:
+        return ResolvedTarget(platform="linux", machine=_target_machine(target), triple=target)
+    return ResolvedTarget(platform=platform, machine=machine, triple=target)
+
+
 def resolve_target_triple(target: Optional[str] = None, *, platform: Optional[str] = None, machine: Optional[str] = None) -> str:
     """Resolve a Rust target triple from explicit config or host platform details."""
     return _resolve_target(target, platform=platform, machine=machine).triple
@@ -81,7 +184,7 @@ def resolve_target_triple(target: Optional[str] = None, *, platform: Optional[st
 
 def shared_library_name(library: str, *, platform: Optional[str] = None) -> str:
     """Render a platform-specific standalone shared-library filename."""
-    platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
+    platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     if platform == "win32":
         return f"{library}.dll"
     if platform == "darwin":
@@ -93,7 +196,7 @@ def shared_library_name(library: str, *, platform: Optional[str] = None) -> str:
 
 def python_extension_name(source_stem: str, *, abi3: bool = False, platform: Optional[str] = None) -> str:
     """Render the Python extension filename for a Cargo cdylib artifact stem."""
-    platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
+    platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     module_name = source_stem.removeprefix("lib")
     if platform == "win32":
         return f"{module_name}.pyd"
@@ -103,50 +206,95 @@ def python_extension_name(source_stem: str, *, abi3: bool = False, platform: Opt
 
 
 def _resolve_target(target: Optional[str] = None, *, platform: Optional[str] = None, machine: Optional[str] = None) -> ResolvedTarget:
-    platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
-    machine = machine or environ.get("HATCH_RUST_MACHINE", platform_machine())
+    raw_platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
+    platform = _normalize_platform(raw_platform)
+    machine = _normalize_machine(machine or environ.get("HATCH_RUST_MACHINE", platform_machine()))
 
     if target:
-        if target.endswith("-pc-windows-msvc"):
-            platform = "win32"
-            machine = target.split("-", 1)[0]
-        elif target.endswith("-apple-darwin"):
-            platform = "darwin"
-            machine = target.split("-", 1)[0]
-        elif "-unknown-linux-" in target:
-            platform = "linux"
-            machine = target.split("-", 1)[0]
-        return ResolvedTarget(platform=platform, machine=machine, triple=target)
+        return _explicit_target(target, platform=platform, machine=machine)
 
     if platform == "win32":
-        if machine in ("x86_64", "AMD64"):
-            triple = "x86_64-pc-windows-msvc"
-        elif machine == "i686":
-            triple = "i686-pc-windows-msvc"
-        elif machine in ("arm64", "aarch64"):
-            triple = "aarch64-pc-windows-msvc"
-        else:
-            raise ValueError(f"Unsupported machine type: {machine} for Windows platform")
+        try:
+            triple = WINDOWS_TARGETS[machine]
+        except KeyError as error:
+            raise _unsupported_machine("Windows", machine, WINDOWS_TARGETS) from error
     elif platform == "darwin":
-        if machine == "x86_64":
-            triple = "x86_64-apple-darwin"
-        elif machine in ("arm64", "aarch64"):
-            triple = "aarch64-apple-darwin"
-        else:
-            raise ValueError(f"Unsupported machine type: {machine} for macOS platform")
+        if machine == "universal2":
+            raise ValueError(
+                "macOS universal2 wheels require separate concrete Rust targets, x86_64-apple-darwin and aarch64-apple-darwin, "
+                "plus a project-specific combine step."
+            )
+        try:
+            triple = DARWIN_TARGETS[machine]
+        except KeyError as error:
+            raise _unsupported_machine("macOS", machine, DARWIN_TARGETS) from error
     elif platform == "linux":
-        if machine == "x86_64":
-            triple = "x86_64-unknown-linux-gnu"
-        elif machine == "i686":
-            triple = "i686-unknown-linux-gnu"
-        elif machine in ("arm64", "aarch64"):
-            triple = "aarch64-unknown-linux-gnu"
-        else:
-            raise ValueError(f"Unsupported machine type: {machine} for Linux platform")
+        linux_targets = _linux_targets_for_platform(raw_platform)
+        try:
+            triple = linux_targets[machine]
+        except KeyError as error:
+            raise _unsupported_machine("Linux", machine, linux_targets) from error
     else:
         raise ValueError(f"Unsupported platform: {platform}")
 
     return ResolvedTarget(platform=platform, machine=machine, triple=triple)
+
+
+def _linux_wheel_platform(resolved_target: ResolvedTarget, platform_tag: Optional[str]) -> str:
+    if platform_tag:
+        return platform_tag
+
+    auditwheel_platform = environ.get("AUDITWHEEL_PLAT")
+    if auditwheel_platform:
+        return auditwheel_platform
+
+    arch = WHEEL_ARCHES.get(resolved_target.machine)
+    if arch is None:
+        raise _unsupported_machine("Linux wheel", resolved_target.machine, WHEEL_ARCHES)
+    if "musl" in resolved_target.triple:
+        return f"musllinux_1_2_{arch}"
+    return f"linux_{arch}"
+
+
+def _wheel_platform(resolved_target: ResolvedTarget, platform_tag: Optional[str]) -> str:
+    if resolved_target.platform == "win32":
+        windows_platforms = {
+            "x86_64": "win_amd64",
+            "i686": "win32",
+            "aarch64": "win_arm64",
+        }
+        try:
+            return windows_platforms[resolved_target.machine]
+        except KeyError as error:
+            raise _unsupported_machine("Windows wheel", resolved_target.machine, windows_platforms) from error
+    if resolved_target.platform == "darwin":
+        if platform_tag:
+            return platform_tag
+        darwin_arches = {"x86_64": "x86_64", "aarch64": "arm64"}
+        try:
+            return next(mac_platforms((11, 0), darwin_arches[resolved_target.machine]))
+        except KeyError as error:
+            raise _unsupported_machine("macOS wheel", resolved_target.machine, darwin_arches) from error
+    if resolved_target.platform == "linux":
+        return _linux_wheel_platform(resolved_target, platform_tag)
+    raise ValueError(f"Unsupported platform for wheel tag: {resolved_target.platform}")
+
+
+def wheel_tag(
+    *,
+    abi3: bool = False,
+    target: Optional[str] = None,
+    platform: Optional[str] = None,
+    machine: Optional[str] = None,
+    resolved_target: Optional[ResolvedTarget] = None,
+    platform_tag: Optional[str] = None,
+    python_version: Optional[tuple[int, int]] = None,
+) -> str:
+    """Render a wheel tag for the resolved Rust target using packaging.tags."""
+    resolved = resolved_target or _resolve_target(target, platform=platform, machine=machine)
+    version = python_version or (version_info.major, version_info.minor)
+    abis = ["abi3"] if abi3 else None
+    return str(next(cpython_tags(python_version=version, abis=abis, platforms=[_wheel_platform(resolved, platform_tag)])))
 
 
 def _artifact_patterns(platform: str) -> tuple[str, ...]:
@@ -429,6 +577,11 @@ class HatchRustBuildConfig(BaseModel):
         alias="artifact-manifest-destination",
         description="Wheel-relative destination template for the artifact metadata manifest.",
     )
+    wheel_platform_tag: Optional[str] = Field(
+        default=None,
+        alias="wheel-platform-tag",
+        description="Override the wheel platform tag, such as manylinux_2_28_x86_64 or musllinux_1_2_x86_64.",
+    )
 
     abi3: bool = Field(
         default=False,
@@ -500,6 +653,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     @property
     def shared_data(self) -> dict[str, str]:
         return dict(self._shared_data)
+
+    @property
+    def resolved_target(self) -> Optional[ResolvedTarget]:
+        return self._resolved_target
 
     def _configured_artifacts(self) -> list[RustArtifactConfig]:
         if self.artifacts:

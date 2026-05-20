@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from logging import getLogger
 from os import getenv
-from platform import machine as platform_machine
-from sys import platform as sys_platform, version_info
 from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-from .structs import HatchRustBuildConfig, HatchRustBuildPlan
+from .structs import HatchRustBuildConfig, HatchRustBuildPlan, wheel_tag
 from .utils import import_string
 
 __all__ = ("HatchRustBuildHook",)
@@ -88,21 +86,11 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         #         build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
         if build_plan.libraries:
             build_data["pure_python"] = False
-            machine = platform_machine().lower()
-            version_major = version_info.major
-            version_minor = version_info.minor
-
-            # TODO abi3
-            if "darwin" in sys_platform:
-                os_name = "macosx_11_0"
-            elif "linux" in sys_platform:
-                os_name = "linux"
-            else:
-                os_name = "win"
-            if config.abi3:
-                build_data["tag"] = f"cp{version_major}{version_minor}-abi3-{os_name}_{machine}"
-            else:
-                build_data["tag"] = f"cp{version_major}{version_minor}-cp{version_major}{version_minor}-{os_name}_{machine}"
+            build_data["tag"] = wheel_tag(
+                abi3=config.abi3,
+                resolved_target=build_plan.resolved_target,
+                platform_tag=config.wheel_platform_tag,
+            )
 
         # force include libraries
         force_include = build_data.setdefault("force_include", {})
