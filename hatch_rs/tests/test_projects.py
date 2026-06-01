@@ -1,5 +1,6 @@
 from json import loads
 from os import environ, listdir
+from os.path import dirname
 from pathlib import Path
 from shutil import rmtree
 from subprocess import PIPE, STDOUT, check_call, run
@@ -19,6 +20,7 @@ def _subprocess_env():
     if env.get("PYTHONPATH"):
         pythonpath = f"{pythonpath}:{env['PYTHONPATH']}"
     env["PYTHONPATH"] = pythonpath
+    env["PATH"] = f"{dirname(executable)}:{env['PATH']}"
     return env
 
 
@@ -41,6 +43,8 @@ class TestProject:
         # compile
         check_call(
             [
+                executable,
+                "-m",
                 "hatchling",
                 "build",
                 "--hooks-only",
@@ -99,6 +103,8 @@ class TestProject:
         # compile
         check_call(
             [
+                executable,
+                "-m",
                 "hatchling",
                 "build",
                 "--hooks-only",
@@ -159,6 +165,8 @@ class TestProject:
         # compile
         check_call(
             [
+                executable,
+                "-m",
                 "hatchling",
                 "build",
                 "--hooks-only",
@@ -229,6 +237,8 @@ class TestProject:
         # generate files
         check_call(
             [
+                executable,
+                "-m",
                 "hatchling",
                 "build",
                 "--hooks-only",
@@ -280,6 +290,8 @@ class TestProject:
 
         completed = run(
             [
+                executable,
+                "-m",
                 "hatchling",
                 "build",
                 "--hooks-only",
