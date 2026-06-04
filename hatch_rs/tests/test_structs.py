@@ -206,6 +206,44 @@ def test_build_plan_generates_explicit_artifacts(tmp_path):
     plan.cleanup()
 
 
+def test_build_plan_skips_artifact_when_skip_if_env_is_truthy(tmp_path, monkeypatch):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        target_dir="isolated",
+        artifacts=[
+            {
+                "name": "project",
+                "manifest": "Cargo.toml",
+                "destination": "{module}/{python_extension_name}",
+            },
+            {
+                "name": "project_ffi",
+                "manifest": "rust/Cargo.toml",
+                "destination": "{module}/lib/{shared_library}",
+                "skip-if-env": "PROJECT_SKIP_SHARED_LIBRARY",
+            },
+        ],
+    )
+
+    monkeypatch.delenv("PROJECT_SKIP_SHARED_LIBRARY", raising=False)
+    assert plan.generate() == [
+        "cargo rustc --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
+        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
+    ]
+
+    monkeypatch.setenv("PROJECT_SKIP_SHARED_LIBRARY", "1")
+    assert plan.generate() == [
+        "cargo rustc --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
+    ]
+
+    monkeypatch.setenv("PROJECT_SKIP_SHARED_LIBRARY", "0")
+    assert len(plan.generate()) == 2
+
+    plan.cleanup()
+
+
 def test_build_plan_copies_shared_library_to_tokenized_destination(tmp_path):
     plan = HatchRustBuildPlan(
         module="project",
