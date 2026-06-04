@@ -114,6 +114,13 @@ WHEEL_ARCHES = {
 }
 
 
+def _env_truthy(value: Optional[str]) -> bool:
+    """Return True when an environment variable value reads as enabled/truthy."""
+    if value is None:
+        return False
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
 def _normalize_machine(machine: str) -> str:
     normalized = machine.lower().replace("-", "_")
     aliases = {
@@ -392,6 +399,11 @@ class RustArtifactConfig(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     name: Optional[str] = Field(default=None, description="Cargo artifact name used for exact artifact discovery and errors.")
+    skip_if_env: Optional[str] = Field(
+        default=None,
+        alias="skip-if-env",
+        description="Skip building and packaging this artifact when the named environment variable is set to a truthy value.",
+    )
     manifest: Optional[Path] = Field(default=None, description="Path to Cargo.toml, relative to the hook path unless absolute.")
     build_type: Optional[BuildType] = Field(default=None, alias="build-type")
     profile: Optional[str] = Field(default=None, description="Cargo profile for this artifact.")
@@ -651,9 +663,12 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     def resolved_target(self) -> Optional[ResolvedTarget]:
         return self._resolved_target
 
+    def _artifact_skipped(self, artifact: RustArtifactConfig) -> bool:
+        return artifact.skip_if_env is not None and _env_truthy(environ.get(artifact.skip_if_env))
+
     def _configured_artifacts(self) -> list[RustArtifactConfig]:
         if self.artifacts:
-            return list(self.artifacts)
+            return [artifact for artifact in self.artifacts if not self._artifact_skipped(artifact)]
         return [RustArtifactConfig(destination=f"{self.module}/{{python_extension_name}}")]
 
     def _artifact_label(self, artifact: RustArtifactConfig) -> str:
