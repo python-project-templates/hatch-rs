@@ -64,7 +64,7 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
             # Perform any cleanup actions
             build_plan.cleanup()
 
-        if not build_plan.copied_artifacts and not build_plan.shared_data:
+        if not build_plan.copied_artifacts and not build_plan.shared_data and not build_plan.shared_scripts:
             raise ValueError("No libraries or generated outputs were created by the build.")
 
         # force include libraries
@@ -100,7 +100,12 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         shared_data = build_data.setdefault("shared_data", {})
         shared_data.update(build_plan.shared_data)
 
+        shared_scripts = build_data.setdefault("shared_scripts", {})
+        shared_scripts.update(build_plan.shared_scripts)
+
         for path in force_include:
             self._logger.warning(f"Force include: {path}")
         for source, destination in shared_data.items():
             self._logger.warning("Shared data: %s -> %s", source, destination)
+        for source, destination in shared_scripts.items():
+            self._logger.warning("Shared script: %s -> %s", source, destination)
