@@ -5,7 +5,7 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from hatch_rs.structs import HatchRustBuildPlan, python_extension_name, resolve_target_triple, shared_library_name, wheel_tag
+from hatch_rs.structs import HatchRustBuildPlan, executable_name, python_extension_name, resolve_target_triple, shared_library_name, wheel_tag
 
 
 @pytest.mark.parametrize(
@@ -95,6 +95,19 @@ def test_shared_library_name(platform: str, expected: str):
 )
 def test_python_extension_name(source_stem: str, platform: str, abi3: bool, expected: str):
     assert python_extension_name(source_stem, abi3=abi3, platform=platform) == expected
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [
+        ("linux", "mycli"),
+        ("darwin", "mycli"),
+        ("win32", "mycli.exe"),
+        ("manylinux_2_28_x86_64", "mycli"),
+    ],
+)
+def test_executable_name(platform: str, expected: str):
+    assert executable_name("mycli", platform=platform) == expected
 
 
 def test_build_plan_generates_cargo_invocation(tmp_path):
@@ -291,6 +304,86 @@ def test_build_plan_uses_explicit_target_for_shared_library_name(tmp_path):
     copied = tmp_path / "project" / "lib" / "libproject_ffi.dylib"
     assert copied.read_bytes() == b"shared library"
     assert plan.libraries == ["project/lib/libproject_ffi.dylib"]
+
+
+def test_build_plan_copies_executable_to_shared_scripts(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[
+            {
+                "name": "project-cli",
+                "manifest": "rust/Cargo.toml",
+                "cargo-target-kind": "bin",
+                "cargo-target": "project",
+                "install-scheme": "shared-scripts",
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "rust" / "target" / "x86_64-unknown-linux-gnu" / "release" / "project"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"#!/bin/sh\necho cli\n")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    # The executable is staged on PATH via shared-scripts, not copied into the package.
+    assert plan.shared_scripts == {str(source): "project"}
+    assert plan.shared_data == {}
+    assert plan.copied_artifacts == []
+    assert not (tmp_path / "project" / "project").exists()
+
+
+def test_build_plan_executable_command_omits_crate_type(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[
+            {
+                "name": "project-cli",
+                "manifest": "rust/Cargo.toml",
+                "cargo-target-kind": "bin",
+                "cargo-target": "project",
+                "install-scheme": "shared-scripts",
+            }
+        ],
+    )
+    plan.generate()
+    args = plan.cargo_invocations[0].args
+    assert "--bin" in args
+    assert "project" in args
+    # A binary must not be forced to a cdylib crate type.
+    assert "--crate-type" not in args
+
+
+def test_build_plan_copies_executable_into_package(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-pc-windows-msvc",
+        artifacts=[
+            {
+                "name": "project-cli",
+                "manifest": "rust/Cargo.toml",
+                "cargo-target-kind": "bin",
+                "cargo-target": "project",
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "rust" / "target" / "x86_64-pc-windows-msvc" / "release" / "project.exe"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"MZ executable")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    copied = tmp_path / "project" / "project.exe"
+    assert copied.read_bytes() == b"MZ executable"
+    assert plan.shared_scripts == {}
 
 
 def test_build_plan_processes_generated_outputs(tmp_path):

@@ -27,6 +27,7 @@ __all__ = (
     "ResolvedTarget",
     "RustArtifactConfig",
     "ValidationCommandConfig",
+    "executable_name",
     "python_extension_name",
     "resolve_target_triple",
     "shared_library_name",
@@ -37,7 +38,7 @@ BuildType = Literal["debug", "release"]
 CargoTargetKind = Literal["lib", "bin", "example", "test", "bench"]
 CbindgenMode = Literal["cli", "build-script"]
 CompilerToolchain = Literal["gcc", "clang", "msvc"]
-InstallScheme = Literal["package", "shared-data", "validate-only"]
+InstallScheme = Literal["package", "shared-data", "shared-scripts", "validate-only"]
 Language = Literal["c", "c++"]
 Binding = Literal["cpython", "pybind11", "nanobind", "generic"]
 Platform = Literal["linux", "darwin", "win32"]
@@ -198,6 +199,14 @@ def shared_library_name(library: str, *, platform: Optional[str] = None) -> str:
     if platform == "linux":
         return f"lib{library}.so"
     raise ValueError(f"Unsupported platform: {platform}")
+
+
+def executable_name(name: str, *, platform: Optional[str] = None) -> str:
+    """Render a platform-specific executable filename for a Cargo bin/example target."""
+    platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
+    if platform == "win32":
+        return f"{name}.exe"
+    return name
 
 
 def python_extension_name(source_stem: str, *, abi3: bool = False, platform: Optional[str] = None) -> str:
@@ -412,6 +421,11 @@ class RustArtifactConfig(BaseModel):
     cargo_target_kind: Optional[CargoTargetKind] = Field(default=None, alias="cargo-target-kind", description="Cargo target selector kind.")
     cargo_target: Optional[str] = Field(default=None, alias="cargo-target", description="Cargo target selector name.")
     crate_type: str = Field(default="cdylib", alias="crate-type", description="Rust crate type to pass through to rustc.")
+    install_scheme: InstallScheme = Field(
+        default="package",
+        alias="install-scheme",
+        description="How to include the compiled artifact: package, shared-data, or shared-scripts (executables on PATH).",
+    )
     destination: Optional[str] = Field(default=None, description="Wheel-relative destination template for the copied artifact.")
     search_deps: bool = Field(default=False, alias="search-deps", description="Search target/<triple>/<profile>/deps even if a root artifact exists.")
     features: Optional[List[str]] = Field(default=None, description="Cargo features to enable for this artifact.")
@@ -637,6 +651,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     _artifact_plans: List[PlannedArtifact] = PrivateAttr(default_factory=list)
     _copied_artifacts: List[CopiedArtifact] = PrivateAttr(default_factory=list)
     _shared_data: dict[str, str] = PrivateAttr(default_factory=dict)
+    _shared_scripts: dict[str, str] = PrivateAttr(default_factory=dict)
     _artifact_manifest_records: list[dict[str, str]] = PrivateAttr(default_factory=list)
     _resolved_target: Optional[ResolvedTarget] = PrivateAttr(default=None)
     _target_dir: Optional[Path] = PrivateAttr(default=None)
@@ -658,6 +673,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     @property
     def shared_data(self) -> dict[str, str]:
         return dict(self._shared_data)
+
+    @property
+    def shared_scripts(self) -> dict[str, str]:
+        return dict(self._shared_scripts)
 
     @property
     def resolved_target(self) -> Optional[ResolvedTarget]:
@@ -687,11 +706,16 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     def _is_python_extension_artifact(self, artifact: RustArtifactConfig) -> bool:
         return artifact.destination is not None and "{python_extension_name}" in artifact.destination
 
+    def _is_executable_artifact(self, artifact: RustArtifactConfig) -> bool:
+        return artifact.cargo_target_kind in ("bin", "example")
+
     def _artifact_role(self, artifact: RustArtifactConfig) -> str:
         if self._is_generated_artifact(artifact):
             return "generated-output"
         if self._is_python_extension_artifact(artifact):
             return "python-extension"
+        if self._is_executable_artifact(artifact):
+            return "executable"
         return artifact.crate_type
 
     def _artifact_manifest(self, artifact: RustArtifactConfig) -> Optional[Path]:
@@ -794,7 +818,9 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         if self._is_python_extension_artifact(artifact) and "apple" in resolved_target.triple:
             rustc_args.extend(("-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"))
         rustc_args.extend(self._artifact_rustc_args(artifact))
-        if "--crate-type" not in rustc_args:
+        # Executables (bin/example) are not crate-type artifacts; injecting
+        # --crate-type would build them as a library instead of a binary.
+        if "--crate-type" not in rustc_args and not self._is_executable_artifact(artifact):
             rustc_args.extend(("--crate-type", artifact.crate_type))
         if rustc_args:
             build_command.append("--")
@@ -881,6 +907,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         self._artifact_plans = []
         self._copied_artifacts = []
         self._shared_data = {}
+        self._shared_scripts = {}
         self._artifact_manifest_records = []
         self._libraries = []
 
@@ -971,6 +998,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             "shared_library": shared_library,
             "import_library": import_library,
             "python_extension_name": python_extension,
+            "executable": source.name,
         }
         try:
             rendered = template.format(**values)
@@ -1222,6 +1250,75 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             copied_artifacts.append(import_library)
         return copied_artifacts
 
+    def _default_executable_destination(self, artifact: RustArtifactConfig) -> str:
+        # Executables placed on PATH (shared-scripts) or alongside data files
+        # use a bare filename; packaged executables land inside the module.
+        if artifact.install_scheme in ("shared-scripts", "shared-data"):
+            return "{executable}"
+        return f"{self.module}/{{executable}}"
+
+    def _copy_executable(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
+        artifact = planned_artifact.artifact
+        target_path = self._require_target_path(planned_artifact)
+        name = artifact.cargo_target or artifact.name
+        if not name:
+            raise ValueError(f"Artifact '{self._artifact_label(artifact)}' of kind '{artifact.cargo_target_kind}' must set cargo-target or name.")
+        executable = executable_name(name, platform=planned_artifact.resolved_target.platform)
+        source = self._find_exact_artifact(target_path, executable, search_deps=artifact.search_deps, artifact=artifact)
+        template = artifact.destination or self._default_executable_destination(artifact)
+        distribution_path = self._format_destination(template, planned_artifact=planned_artifact, source=source)
+        return self._place_artifact(
+            source,
+            distribution_path,
+            build_root=build_root,
+            planned_artifact=planned_artifact,
+            role="executable",
+            install_scheme=artifact.install_scheme,
+        )
+
+    def _place_artifact(
+        self,
+        source: Path,
+        distribution_path: Path,
+        *,
+        build_root: Path,
+        planned_artifact: PlannedArtifact,
+        role: str,
+        install_scheme: str,
+        is_library: bool = False,
+    ) -> list[CopiedArtifact]:
+        """Place a built artifact per its install scheme: into the package
+        (``package``), the wheel's shared data (``shared-data``), or the wheel's
+        scripts directory on ``PATH`` (``shared-scripts``)."""
+        if install_scheme == "package":
+            return [
+                self._copy_artifact(
+                    source,
+                    distribution_path,
+                    build_root=build_root,
+                    is_library=is_library,
+                    planned_artifact=planned_artifact,
+                    role=role,
+                    install_scheme="package",
+                )
+            ]
+        if install_scheme == "validate-only":
+            return []
+        if install_scheme == "shared-data":
+            self._shared_data[str(source)] = distribution_path.as_posix()
+        elif install_scheme == "shared-scripts":
+            self._shared_scripts[str(source)] = distribution_path.as_posix()
+        else:
+            raise ValueError(f"Unsupported install scheme for artifact '{self._artifact_label(planned_artifact.artifact)}': {install_scheme}")
+        self._record_packaged_artifact(
+            planned_artifact=planned_artifact,
+            source=source,
+            distribution_path=distribution_path.as_posix(),
+            install_scheme=install_scheme,
+            role=role,
+        )
+        return []
+
     def _artifact_outputs(self, artifact: RustArtifactConfig) -> list[GeneratedOutputConfig]:
         return list(artifact.outputs)
 
@@ -1272,6 +1369,15 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                     source=source,
                     distribution_path=distribution_path.as_posix(),
                     install_scheme="shared-data",
+                    role="generated-output",
+                )
+            elif output.install_scheme == "shared-scripts":
+                self._shared_scripts[str(source)] = distribution_path.as_posix()
+                self._record_packaged_artifact(
+                    planned_artifact=planned_artifact,
+                    source=source,
+                    distribution_path=distribution_path.as_posix(),
+                    install_scheme="shared-scripts",
                     role="generated-output",
                 )
             else:
@@ -1424,6 +1530,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             copied_artifacts.extend(self._copy_python_extension(planned_artifact, build_root=build_root))
             if artifact.outputs:
                 copied_artifacts.extend(self._process_generated_outputs(planned_artifact, build_root=build_root))
+        elif self._is_executable_artifact(artifact):
+            copied_artifacts.extend(self._copy_executable(planned_artifact, build_root=build_root))
+            if artifact.outputs:
+                copied_artifacts.extend(self._process_generated_outputs(planned_artifact, build_root=build_root))
         else:
             copied_artifacts.extend(self._copy_cdylib(planned_artifact, build_root=build_root))
             if artifact.outputs:
@@ -1436,6 +1546,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         build_root = Path.cwd().resolve()
         self._copied_artifacts = []
         self._shared_data = {}
+        self._shared_scripts = {}
         self._artifact_manifest_records = []
         self._libraries = []
 
