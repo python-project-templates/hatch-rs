@@ -8,6 +8,11 @@ import pytest
 from hatch_rs.structs import HatchRustBuildPlan, executable_name, python_extension_name, resolve_target_triple, shared_library_name, wheel_tag
 
 
+@pytest.fixture(autouse=True)
+def clear_cargo_target_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+
+
 @pytest.mark.parametrize(
     ("platform", "machine", "expected"),
     [
@@ -133,8 +138,10 @@ def test_build_plan_generates_manifest_and_cargo_options(tmp_path):
     )
 
     assert plan.generate() == [
-        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu "
-        "--features extension-module --no-default-features --locked --frozen --color never -- --crate-type cdylib"
+        (
+            "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu "
+            "--features extension-module --no-default-features --locked --frozen --color never -- --crate-type cdylib"
+        )
     ]
 
 
