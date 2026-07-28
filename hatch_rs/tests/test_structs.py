@@ -133,8 +133,10 @@ def test_build_plan_generates_manifest_and_cargo_options(tmp_path):
     )
 
     assert plan.generate() == [
-        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu "
-        "--features extension-module --no-default-features --locked --frozen --color never -- --crate-type cdylib"
+        (
+            "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu "
+            "--features extension-module --no-default-features --locked --frozen --color never -- --crate-type cdylib"
+        )
     ]
 
 
