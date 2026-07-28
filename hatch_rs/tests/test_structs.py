@@ -8,6 +8,11 @@ import pytest
 from hatch_rs.structs import HatchRustBuildPlan, executable_name, python_extension_name, resolve_target_triple, shared_library_name, wheel_tag
 
 
+@pytest.fixture(autouse=True)
+def clear_cargo_target_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+
+
 @pytest.mark.parametrize(
     ("platform", "machine", "expected"),
     [
