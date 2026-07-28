@@ -13,7 +13,7 @@ from shutil import copy2
 from subprocess import run
 from sys import platform as sys_platform, version_info
 from tempfile import TemporaryDirectory
-from typing import Any, List, Literal, Optional
+from typing import Any, Literal
 
 from packaging.tags import cpython_tags, mac_platforms
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
@@ -115,7 +115,7 @@ WHEEL_ARCHES = {
 }
 
 
-def _env_truthy(value: Optional[str]) -> bool:
+def _env_truthy(value: str | None) -> bool:
     """Return True when an environment variable value reads as enabled/truthy."""
     if value is None:
         return False
@@ -184,12 +184,12 @@ def _explicit_target(target: str, *, platform: str, machine: str) -> ResolvedTar
     return ResolvedTarget(platform=platform, machine=machine, triple=target)
 
 
-def resolve_target_triple(target: Optional[str] = None, *, platform: Optional[str] = None, machine: Optional[str] = None) -> str:
+def resolve_target_triple(target: str | None = None, *, platform: str | None = None, machine: str | None = None) -> str:
     """Resolve a Rust target triple from explicit config or host platform details."""
     return _resolve_target(target, platform=platform, machine=machine).triple
 
 
-def shared_library_name(library: str, *, platform: Optional[str] = None) -> str:
+def shared_library_name(library: str, *, platform: str | None = None) -> str:
     """Render a platform-specific standalone shared-library filename."""
     platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     if platform == "win32":
@@ -201,7 +201,7 @@ def shared_library_name(library: str, *, platform: Optional[str] = None) -> str:
     raise ValueError(f"Unsupported platform: {platform}")
 
 
-def executable_name(name: str, *, platform: Optional[str] = None) -> str:
+def executable_name(name: str, *, platform: str | None = None) -> str:
     """Render a platform-specific executable filename for a Cargo bin/example target."""
     platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     if platform == "win32":
@@ -209,7 +209,7 @@ def executable_name(name: str, *, platform: Optional[str] = None) -> str:
     return name
 
 
-def python_extension_name(source_stem: str, *, abi3: bool = False, platform: Optional[str] = None) -> str:
+def python_extension_name(source_stem: str, *, abi3: bool = False, platform: str | None = None) -> str:
     """Render the Python extension filename for a Cargo cdylib artifact stem."""
     platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     module_name = source_stem.removeprefix("lib")
@@ -220,7 +220,7 @@ def python_extension_name(source_stem: str, *, abi3: bool = False, platform: Opt
     return f"{module_name}.so"
 
 
-def _resolve_target(target: Optional[str] = None, *, platform: Optional[str] = None, machine: Optional[str] = None) -> ResolvedTarget:
+def _resolve_target(target: str | None = None, *, platform: str | None = None, machine: str | None = None) -> ResolvedTarget:
     raw_platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
     platform = _normalize_platform(raw_platform)
     machine = _normalize_machine(machine or environ.get("HATCH_RUST_MACHINE", platform_machine()))
@@ -255,7 +255,7 @@ def _resolve_target(target: Optional[str] = None, *, platform: Optional[str] = N
     return ResolvedTarget(platform=platform, machine=machine, triple=triple)
 
 
-def _linux_wheel_platform(resolved_target: ResolvedTarget, platform_tag: Optional[str]) -> str:
+def _linux_wheel_platform(resolved_target: ResolvedTarget, platform_tag: str | None) -> str:
     if platform_tag:
         return platform_tag
 
@@ -271,7 +271,7 @@ def _linux_wheel_platform(resolved_target: ResolvedTarget, platform_tag: Optiona
     return f"linux_{arch}"
 
 
-def _wheel_platform(resolved_target: ResolvedTarget, platform_tag: Optional[str]) -> str:
+def _wheel_platform(resolved_target: ResolvedTarget, platform_tag: str | None) -> str:
     if resolved_target.platform == "win32":
         windows_platforms = {
             "x86_64": "win_amd64",
@@ -298,12 +298,12 @@ def _wheel_platform(resolved_target: ResolvedTarget, platform_tag: Optional[str]
 def wheel_tag(
     *,
     abi3: bool = False,
-    target: Optional[str] = None,
-    platform: Optional[str] = None,
-    machine: Optional[str] = None,
-    resolved_target: Optional[ResolvedTarget] = None,
-    platform_tag: Optional[str] = None,
-    python_version: Optional[tuple[int, int]] = None,
+    target: str | None = None,
+    platform: str | None = None,
+    machine: str | None = None,
+    resolved_target: ResolvedTarget | None = None,
+    platform_tag: str | None = None,
+    python_version: tuple[int, int] | None = None,
 ) -> str:
     """Render a wheel tag for the resolved Rust target using packaging.tags."""
     resolved = resolved_target or _resolve_target(target, platform=platform, machine=machine)
@@ -340,7 +340,7 @@ def _cargo_path(path: Path) -> str:
     return path.as_posix()
 
 
-def _cargo_profile(profile: Optional[str], build_type: BuildType) -> str:
+def _cargo_profile(profile: str | None, build_type: BuildType) -> str:
     return profile or build_type
 
 
@@ -364,7 +364,7 @@ class GeneratedOutputConfig(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     source: Path = Field(description="Generated or validated source path, relative to the hook path unless absolute.")
-    destination: Optional[str] = Field(default=None, description="Wheel-relative destination path or template.")
+    destination: str | None = Field(default=None, description="Wheel-relative destination path or template.")
     install_scheme: InstallScheme = Field(default="package", alias="install-scheme", description="How to include this output.")
     required: bool = Field(default=True, description="Whether the source must exist after the artifact runs.")
 
@@ -381,20 +381,20 @@ class ValidationCommandConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    command: List[str] = Field(description="Validation command argv list.")
-    working_directory: Optional[Path] = Field(default=None, alias="working-directory", description="Validation command working directory.")
+    command: list[str] = Field(description="Validation command argv list.")
+    working_directory: Path | None = Field(default=None, alias="working-directory", description="Validation command working directory.")
     env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for this validation command.")
 
     @field_validator("command", mode="before")
     @classmethod
     def validate_command(cls, values: Any) -> list[str]:
         if isinstance(values, str):
-            raise ValueError("Validation command must be an argv list, not a shell string.")
+            raise TypeError("Validation command must be an argv list, not a shell string.")
         return [str(value) for value in values]
 
     @field_validator("working_directory", mode="before")
     @classmethod
-    def validate_working_directory(cls, path: Optional[Path]) -> Optional[Path]:
+    def validate_working_directory(cls, path: Path | None) -> Path | None:
         if path is None:
             return None
         if not isinstance(path, Path):
@@ -407,60 +407,60 @@ class RustArtifactConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    name: Optional[str] = Field(default=None, description="Cargo artifact name used for exact artifact discovery and errors.")
-    skip_if_env: Optional[str] = Field(
+    name: str | None = Field(default=None, description="Cargo artifact name used for exact artifact discovery and errors.")
+    skip_if_env: str | None = Field(
         default=None,
         alias="skip-if-env",
         description="Skip building and packaging this artifact when the named environment variable is set to a truthy value.",
     )
-    manifest: Optional[Path] = Field(default=None, description="Path to Cargo.toml, relative to the hook path unless absolute.")
-    build_type: Optional[BuildType] = Field(default=None, alias="build-type")
-    profile: Optional[str] = Field(default=None, description="Cargo profile for this artifact.")
-    target: Optional[str] = Field(default=None, description="Rust target triple for this artifact.")
-    package: Optional[str] = Field(default=None, description="Cargo package selector.")
-    cargo_target_kind: Optional[CargoTargetKind] = Field(default=None, alias="cargo-target-kind", description="Cargo target selector kind.")
-    cargo_target: Optional[str] = Field(default=None, alias="cargo-target", description="Cargo target selector name.")
+    manifest: Path | None = Field(default=None, description="Path to Cargo.toml, relative to the hook path unless absolute.")
+    build_type: BuildType | None = Field(default=None, alias="build-type")
+    profile: str | None = Field(default=None, description="Cargo profile for this artifact.")
+    target: str | None = Field(default=None, description="Rust target triple for this artifact.")
+    package: str | None = Field(default=None, description="Cargo package selector.")
+    cargo_target_kind: CargoTargetKind | None = Field(default=None, alias="cargo-target-kind", description="Cargo target selector kind.")
+    cargo_target: str | None = Field(default=None, alias="cargo-target", description="Cargo target selector name.")
     crate_type: str = Field(default="cdylib", alias="crate-type", description="Rust crate type to pass through to rustc.")
     install_scheme: InstallScheme = Field(
         default="package",
         alias="install-scheme",
         description="How to include the compiled artifact: package, shared-data, or shared-scripts (executables on PATH).",
     )
-    destination: Optional[str] = Field(default=None, description="Wheel-relative destination template for the copied artifact.")
+    destination: str | None = Field(default=None, description="Wheel-relative destination template for the copied artifact.")
     search_deps: bool = Field(default=False, alias="search-deps", description="Search target/<triple>/<profile>/deps even if a root artifact exists.")
-    features: Optional[List[str]] = Field(default=None, description="Cargo features to enable for this artifact.")
-    all_features: Optional[bool] = Field(default=None, alias="all-features", description="Enable all Cargo features for this artifact.")
-    no_default_features: Optional[bool] = Field(
+    features: list[str] | None = Field(default=None, description="Cargo features to enable for this artifact.")
+    all_features: bool | None = Field(default=None, alias="all-features", description="Enable all Cargo features for this artifact.")
+    no_default_features: bool | None = Field(
         default=None,
         alias="no-default-features",
         description="Disable Cargo default features for this artifact.",
     )
-    locked: Optional[bool] = Field(default=None, description="Pass --locked to Cargo for this artifact.")
-    frozen: Optional[bool] = Field(default=None, description="Pass --frozen to Cargo for this artifact.")
-    cargo_args: Optional[List[str]] = Field(default=None, alias="cargo-args", description="Additional Cargo arguments for this artifact.")
-    rustc_args: Optional[List[str]] = Field(default=None, alias="rustc-args", description="Additional rustc arguments for this artifact.")
+    locked: bool | None = Field(default=None, description="Pass --locked to Cargo for this artifact.")
+    frozen: bool | None = Field(default=None, description="Pass --frozen to Cargo for this artifact.")
+    cargo_args: list[str] | None = Field(default=None, alias="cargo-args", description="Additional Cargo arguments for this artifact.")
+    rustc_args: list[str] | None = Field(default=None, alias="rustc-args", description="Additional rustc arguments for this artifact.")
     env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for this artifact.")
-    command: Optional[List[str]] = Field(default=None, description="Command argv for generated-file artifacts.")
-    inputs: List[str] = Field(default_factory=list, description="Input files/globs for validation and documentation.")
-    outputs: List[GeneratedOutputConfig] = Field(default_factory=list, description="Generated file outputs.")
-    working_directory: Optional[Path] = Field(default=None, alias="working-directory", description="Command working directory.")
-    generator: Optional[str] = Field(default=None, description="Typed generator preset, currently cbindgen.")
-    crate: Optional[str] = Field(default=None, description="Rust crate path for cbindgen CLI mode.")
-    config: Optional[Path] = Field(default=None, description="Generator config path, such as cbindgen.toml.")
-    language: Optional[str] = Field(default=None, description="Generator language, such as C, C++, or Cython.")
+    command: list[str] | None = Field(default=None, description="Command argv for generated-file artifacts.")
+    inputs: list[str] = Field(default_factory=list, description="Input files/globs for validation and documentation.")
+    outputs: list[GeneratedOutputConfig] = Field(default_factory=list, description="Generated file outputs.")
+    working_directory: Path | None = Field(default=None, alias="working-directory", description="Command working directory.")
+    generator: str | None = Field(default=None, description="Typed generator preset, currently cbindgen.")
+    crate: str | None = Field(default=None, description="Rust crate path for cbindgen CLI mode.")
+    config: Path | None = Field(default=None, description="Generator config path, such as cbindgen.toml.")
+    language: str | None = Field(default=None, description="Generator language, such as C, C++, or Cython.")
     verify: bool = Field(default=False, description="Run a generator in verification mode when supported.")
     cbindgen_mode: CbindgenMode = Field(default="cli", alias="cbindgen-mode", description="How cbindgen headers are produced.")
     cpp_compat: bool = Field(default=False, alias="cpp-compat", description="Reserved for cbindgen C++ compatibility presets.")
-    depfile: Optional[Path] = Field(default=None, description="Reserved depfile path for generated headers.")
-    expected_symbols: List[str] = Field(default_factory=list, alias="expected-symbols", description="Exported symbols expected in a copied library.")
-    expected_headers: List[Path] = Field(default_factory=list, alias="expected-headers", description="Header files expected to exist after build.")
-    expected_abi_strings: List[str] = Field(
+    depfile: Path | None = Field(default=None, description="Reserved depfile path for generated headers.")
+    expected_symbols: list[str] = Field(default_factory=list, alias="expected-symbols", description="Exported symbols expected in a copied library.")
+    expected_headers: list[Path] = Field(default_factory=list, alias="expected-headers", description="Header files expected to exist after build.")
+    expected_abi_strings: list[str] = Field(
         default_factory=list,
         alias="expected-abi-strings",
         description="ABI version strings or macros expected in the configured headers.",
     )
     validate_artifact: bool = Field(default=False, alias="validate", description="Load the copied library with ctypes.CDLL after copy.")
-    validation_commands: List[ValidationCommandConfig] = Field(
+    validation_commands: list[ValidationCommandConfig] = Field(
         default_factory=list,
         alias="validation-commands",
         description="Project-specific validation commands to run after artifact copy.",
@@ -470,7 +470,7 @@ class RustArtifactConfig(BaseModel):
         alias="include-import-lib",
         description="On Windows, include the import library emitted next to a cdylib.",
     )
-    import_library_destination: Optional[str] = Field(
+    import_library_destination: str | None = Field(
         default=None,
         alias="import-library-destination",
         description="Wheel-relative destination template for a Windows import library.",
@@ -478,7 +478,7 @@ class RustArtifactConfig(BaseModel):
 
     @field_validator("manifest", mode="before")
     @classmethod
-    def validate_manifest(cls, manifest: Optional[Path]) -> Optional[Path]:
+    def validate_manifest(cls, manifest: Path | None) -> Path | None:
         if manifest is None:
             return None
         if not isinstance(manifest, Path):
@@ -487,7 +487,7 @@ class RustArtifactConfig(BaseModel):
 
     @field_validator("features", "cargo_args", "rustc_args", mode="before")
     @classmethod
-    def validate_optional_list(cls, values: Any) -> Optional[list[str]]:
+    def validate_optional_list(cls, values: Any) -> list[str] | None:
         if values is None:
             return None
         if isinstance(values, str):
@@ -496,11 +496,11 @@ class RustArtifactConfig(BaseModel):
 
     @field_validator("command", mode="before")
     @classmethod
-    def validate_command(cls, values: Any) -> Optional[list[str]]:
+    def validate_command(cls, values: Any) -> list[str] | None:
         if values is None:
             return None
         if isinstance(values, str):
-            raise ValueError("Artifact command must be an argv list, not a shell string.")
+            raise TypeError("Artifact command must be an argv list, not a shell string.")
         return [str(value) for value in values]
 
     @field_validator("inputs", mode="before")
@@ -543,7 +543,7 @@ class RustArtifactConfig(BaseModel):
 
     @field_validator("working_directory", "config", "depfile", mode="before")
     @classmethod
-    def validate_optional_path(cls, path: Optional[Path]) -> Optional[Path]:
+    def validate_optional_path(cls, path: Path | None) -> Path | None:
         if path is None:
             return None
         if not isinstance(path, Path):
@@ -556,7 +556,7 @@ class PlannedArtifact:
     """A generated Cargo invocation plus the metadata needed to collect its output."""
 
     artifact: RustArtifactConfig
-    invocation: Optional[CargoInvocation]
+    invocation: CargoInvocation | None
     resolved_target: ResolvedTarget
     profile: str
     target_dir: Path
@@ -568,24 +568,24 @@ class HatchRustBuildConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    verbose: Optional[bool] = Field(default=False)
-    name: Optional[str] = Field(default=None)
+    verbose: bool | None = Field(default=False)
+    name: str | None = Field(default=None)
 
     module: str = Field(description="Python module name for the Rust extension.")
-    path: Optional[Path] = Field(default=None, description="Path to the project root directory.")
-    manifest: Optional[Path] = Field(default=None, description="Path to Cargo.toml, relative to path unless absolute.")
+    path: Path | None = Field(default=None, description="Path to the project root directory.")
+    manifest: Path | None = Field(default=None, description="Path to Cargo.toml, relative to path unless absolute.")
     build_type: BuildType = Field(default="release", alias="build-type")
-    profile: Optional[str] = Field(default=None, description="Cargo profile to build. Overrides build_type when set.")
-    features: List[str] = Field(default_factory=list, description="Cargo features to enable.")
+    profile: str | None = Field(default=None, description="Cargo profile to build. Overrides build_type when set.")
+    features: list[str] = Field(default_factory=list, description="Cargo features to enable.")
     all_features: bool = Field(default=False, alias="all-features", description="Enable all Cargo features.")
     no_default_features: bool = Field(default=False, alias="no-default-features", description="Disable Cargo default features.")
     locked: bool = Field(default=False, description="Pass --locked to Cargo.")
     frozen: bool = Field(default=False, description="Pass --frozen to Cargo.")
-    cargo_args: List[str] = Field(default_factory=list, alias="cargo-args", description="Additional arguments passed to Cargo.")
-    rustc_args: List[str] = Field(default_factory=list, alias="rustc-args", description="Additional arguments passed to rustc.")
-    target_dir: Optional[str] = Field(default=None, alias="target-dir", description="Cargo target directory mode or explicit path.")
+    cargo_args: list[str] = Field(default_factory=list, alias="cargo-args", description="Additional arguments passed to Cargo.")
+    rustc_args: list[str] = Field(default_factory=list, alias="rustc-args", description="Additional arguments passed to rustc.")
+    target_dir: str | None = Field(default=None, alias="target-dir", description="Cargo target directory mode or explicit path.")
     env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for Cargo.")
-    artifacts: List[RustArtifactConfig] = Field(default_factory=list, description="Explicit Rust artifacts to build and package.")
+    artifacts: list[RustArtifactConfig] = Field(default_factory=list, description="Explicit Rust artifacts to build and package.")
     artifact_manifest: bool = Field(
         default=False,
         alias="artifact-manifest",
@@ -596,7 +596,7 @@ class HatchRustBuildConfig(BaseModel):
         alias="artifact-manifest-destination",
         description="Wheel-relative destination template for the artifact metadata manifest.",
     )
-    wheel_platform_tag: Optional[str] = Field(
+    wheel_platform_tag: str | None = Field(
         default=None,
         alias="wheel-platform-tag",
         description="Override the wheel platform tag, such as manylinux_2_28_x86_64 or musllinux_1_2_x86_64.",
@@ -607,7 +607,7 @@ class HatchRustBuildConfig(BaseModel):
         description="If True, build the extension with Python's ABI3 compatibility.",
     )
 
-    target: Optional[str] = Field(
+    target: str | None = Field(
         default=None,
         description="Target platform for the build. If not specified, it will be determined automatically.",
     )
@@ -615,7 +615,7 @@ class HatchRustBuildConfig(BaseModel):
     # Validate path
     @field_validator("path", mode="before")
     @classmethod
-    def validate_path(cls, path: Optional[Path]) -> Path:
+    def validate_path(cls, path: Path | None) -> Path:
         if path is None:
             return Path.cwd()
         if not isinstance(path, Path):
@@ -626,7 +626,7 @@ class HatchRustBuildConfig(BaseModel):
 
     @field_validator("manifest", mode="before")
     @classmethod
-    def validate_manifest(cls, manifest: Optional[Path]) -> Optional[Path]:
+    def validate_manifest(cls, manifest: Path | None) -> Path | None:
         if manifest is None:
             return None
         if not isinstance(manifest, Path):
@@ -644,30 +644,30 @@ class HatchRustBuildConfig(BaseModel):
 
 
 class HatchRustBuildPlan(HatchRustBuildConfig):
-    commands: List[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
 
-    _libraries: List[str] = PrivateAttr(default_factory=list)
-    _cargo_invocations: List[CargoInvocation] = PrivateAttr(default_factory=list)
-    _artifact_plans: List[PlannedArtifact] = PrivateAttr(default_factory=list)
-    _copied_artifacts: List[CopiedArtifact] = PrivateAttr(default_factory=list)
+    _libraries: list[str] = PrivateAttr(default_factory=list)
+    _cargo_invocations: list[CargoInvocation] = PrivateAttr(default_factory=list)
+    _artifact_plans: list[PlannedArtifact] = PrivateAttr(default_factory=list)
+    _copied_artifacts: list[CopiedArtifact] = PrivateAttr(default_factory=list)
     _shared_data: dict[str, str] = PrivateAttr(default_factory=dict)
     _shared_scripts: dict[str, str] = PrivateAttr(default_factory=dict)
     _artifact_manifest_records: list[dict[str, str]] = PrivateAttr(default_factory=list)
-    _resolved_target: Optional[ResolvedTarget] = PrivateAttr(default=None)
-    _target_dir: Optional[Path] = PrivateAttr(default=None)
+    _resolved_target: ResolvedTarget | None = PrivateAttr(default=None)
+    _target_dir: Path | None = PrivateAttr(default=None)
     _set_target_dir_env: bool = PrivateAttr(default=False)
-    _temporary_target_dir: Optional[TemporaryDirectory[str]] = PrivateAttr(default=None)
+    _temporary_target_dir: TemporaryDirectory[str] | None = PrivateAttr(default=None)
 
     @property
-    def libraries(self) -> List[str]:
+    def libraries(self) -> list[str]:
         return list(self._libraries)
 
     @property
-    def cargo_invocations(self) -> List[CargoInvocation]:
+    def cargo_invocations(self) -> list[CargoInvocation]:
         return list(self._cargo_invocations)
 
     @property
-    def copied_artifacts(self) -> List[CopiedArtifact]:
+    def copied_artifacts(self) -> list[CopiedArtifact]:
         return list(self._copied_artifacts)
 
     @property
@@ -679,7 +679,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return dict(self._shared_scripts)
 
     @property
-    def resolved_target(self) -> Optional[ResolvedTarget]:
+    def resolved_target(self) -> ResolvedTarget | None:
         return self._resolved_target
 
     def _artifact_skipped(self, artifact: RustArtifactConfig) -> bool:
@@ -718,7 +718,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             return "executable"
         return artifact.crate_type
 
-    def _artifact_manifest(self, artifact: RustArtifactConfig) -> Optional[Path]:
+    def _artifact_manifest(self, artifact: RustArtifactConfig) -> Path | None:
         return artifact.manifest if artifact.manifest is not None else self.manifest
 
     def _artifact_profile(self, artifact: RustArtifactConfig) -> str:
@@ -734,7 +734,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     def _artifact_rustc_args(self, artifact: RustArtifactConfig) -> list[str]:
         return list(artifact.rustc_args if artifact.rustc_args is not None else self.rustc_args)
 
-    def _artifact_bool(self, value: Optional[bool], default: bool) -> bool:
+    def _artifact_bool(self, value: bool | None, default: bool) -> bool:
         return default if value is None else value
 
     def _artifact_env(self, artifact: RustArtifactConfig) -> dict[str, str]:
@@ -742,7 +742,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         environment.update({str(key): str(value) for key, value in artifact.env.items()})
         return environment
 
-    def _resolve_target_dir(self, manifest: Optional[Path] = None, artifact_env: Optional[dict[str, str]] = None) -> tuple[Path, bool]:
+    def _resolve_target_dir(self, manifest: Path | None = None, artifact_env: dict[str, str] | None = None) -> tuple[Path, bool]:
         path = Path(self.path)
         if self.target_dir == "isolated":
             if self._temporary_target_dir is None:
@@ -786,7 +786,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             raise ValueError(f"Artifact '{self._artifact_label(artifact)}' must set cargo-target for --{artifact.cargo_target_kind}.")
         build_command.append(artifact.cargo_target)
 
-    def _build_artifact_plan(self, artifact: RustArtifactConfig, *, global_target: Optional[str]) -> PlannedArtifact:
+    def _build_artifact_plan(self, artifact: RustArtifactConfig, *, global_target: str | None) -> PlannedArtifact:
         resolved_target = _resolve_target(artifact.target if artifact.target is not None else global_target)
         profile = self._artifact_profile(artifact)
         manifest = self._artifact_manifest(artifact)
@@ -873,7 +873,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             command.append(crate)
         return command
 
-    def _build_command_artifact_plan(self, artifact: RustArtifactConfig, *, global_target: Optional[str]) -> PlannedArtifact:
+    def _build_command_artifact_plan(self, artifact: RustArtifactConfig, *, global_target: str | None) -> PlannedArtifact:
         resolved_target = _resolve_target(artifact.target if artifact.target is not None else global_target)
         profile = self._artifact_profile(artifact)
         manifest = self._artifact_manifest(artifact)
@@ -1052,7 +1052,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         *,
         build_root: Path,
         is_library: bool = False,
-        planned_artifact: Optional[PlannedArtifact] = None,
+        planned_artifact: PlannedArtifact | None = None,
         role: str = "file",
         install_scheme: str = "package",
     ) -> CopiedArtifact:
@@ -1194,7 +1194,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         target_path: Path,
         shared_library: str,
         build_root: Path,
-    ) -> Optional[CopiedArtifact]:
+    ) -> CopiedArtifact | None:
         artifact = planned_artifact.artifact
         if not artifact.include_import_lib or planned_artifact.resolved_target.platform != "win32":
             return None
