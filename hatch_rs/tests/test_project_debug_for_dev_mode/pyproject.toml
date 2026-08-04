@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-cpp-test-project-debug-for-dev-mode"
+description = "Basic test project for hatch-rs"
+version = "0.1.0"
+requires-python = ">=3.9"
+
+[tool.hatch.build]
+artifacts = [
+    "project/*.dll",
+    "project/*.dylib",
+    "project/*.so",
+]
+
+[tool.hatch.build.sources]
+src = "/"
+
+[tool.hatch.build.targets.sdist]
+packages = ["project"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["project"]
+
+[tool.hatch.build.hooks.hatch-rs]
+verbose = true
+abi3 = true
+module = "project"
+target-dir = "target"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "extension"
+manifest = "Cargo.toml"
+destination = "project/{python_extension_name}"
+debug-for-dev-mode = true

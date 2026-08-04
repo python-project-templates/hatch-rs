@@ -50,7 +50,7 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         build_plan = build_plan_class(**config.model_dump())
 
         # Generate commands
-        build_plan.generate()
+        build_plan.generate(editable_install=(version == "editable"))
 
         # Log commands if in verbose mode
         if config.verbose:
