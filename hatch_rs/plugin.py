@@ -50,6 +50,8 @@ class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
         build_plan = build_plan_class(**config.model_dump())
 
         # Generate commands
+        if isinstance(build_plan, HatchRustBuildPlan):
+            build_plan.set_editable_install(version == "editable")
         build_plan.generate()
 
         # Log commands if in verbose mode

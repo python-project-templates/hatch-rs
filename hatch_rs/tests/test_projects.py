@@ -306,3 +306,38 @@ class TestProject:
 
         assert completed.returncode != 0
         assert "validation_failure_missing_symbol" in completed.stdout
+
+    def test_editable_debug(self):
+        project_folder = "test_project_editable_debug"
+        # cleanup
+        rmtree(f"hatch_rs/tests/{project_folder}/target", ignore_errors=True)
+        rmtree(f"hatch_rs/tests/{project_folder}/project/extension.abi3.so", ignore_errors=True)
+        rmtree(f"hatch_rs/tests/{project_folder}/project/extension.abi3.pyd", ignore_errors=True)
+        modules.pop("project", None)
+        modules.pop("project.extension", None)
+
+        # install project in development mode (editable install)
+        check_call(
+            [
+                "pip",
+                "install",
+                "--verbose",
+                # ensure hatch-rs from this repository is used and not fetched from PyPI
+                "--no-build-isolation",
+                "--editable",
+                ".",
+            ],
+            cwd=f"hatch_rs/tests/{project_folder}",
+            env=_subprocess_env(),
+        )
+
+        # check editable-debug option was honored
+        assert Path(f"hatch_rs/tests/{project_folder}/target/debug").exists()
+        assert not Path(f"hatch_rs/tests/{project_folder}/target/release").exists()
+
+        # import
+        here = Path(__file__).parent / project_folder
+        path.insert(0, str(here))
+        import project.extension
+
+        assert project.extension.hello() == "A string"
