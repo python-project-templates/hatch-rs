@@ -47,7 +47,7 @@ destination = "project/lib/{shared_library}"
 Destination templates support `{module}`, `{target}`, `{profile}`, `{name}`,
 `{shared_library}`, `{import_library}`, and `{python_extension_name}`.
 
-### Forcing rust debug profile in development mode
+### Using the Rust debug profile for editable installs
 
 By default rust release profile is used to compile the artifacts and it can
 be changed using the `profile` option in `tool.hatch.build.hooks.hatch-rs`
@@ -57,8 +57,8 @@ When installing the Python project in development mode (aka editable installs)
 using the command `pip install --editable <package>`, it can be preferred
 to use the rust debug profile so the compilation time is faster.
 
-Using rust debug profile in development mode can be enforced by setting the
-`debug-for-dev-mode` option to `true` either in `tool.hatch.build.hooks.hatch-rs`
+Using the Rust debug profile for editable installs can be enforced by setting the
+`editable-debug` option to `true` either in `tool.hatch.build.hooks.hatch-rs`
 or `tool.hatch.build.hooks.hatch-rs.artifacts` sections.
 
 ### Generated files and headers

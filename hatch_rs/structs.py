@@ -416,10 +416,10 @@ class RustArtifactConfig(BaseModel):
     manifest: Path | None = Field(default=None, description="Path to Cargo.toml, relative to the hook path unless absolute.")
     build_type: BuildType | None = Field(default=None, alias="build-type")
     profile: str | None = Field(default=None, description="Cargo profile for this artifact.")
-    debug_for_dev_mode: bool = Field(
+    editable_debug: bool = Field(
         default=False,
-        alias="debug-for-dev-mode",
-        description="Force rust debug profile when installing the Python project in development mode (aka editable installs)",
+        alias="editable-debug",
+        description="Use the Rust debug profile for editable installs.",
     )
     target: str | None = Field(default=None, description="Rust target triple for this artifact.")
     package: str | None = Field(default=None, description="Cargo package selector.")
@@ -581,10 +581,10 @@ class HatchRustBuildConfig(BaseModel):
     manifest: Path | None = Field(default=None, description="Path to Cargo.toml, relative to path unless absolute.")
     build_type: BuildType = Field(default="release", alias="build-type")
     profile: str | None = Field(default=None, description="Cargo profile to build. Overrides build_type when set.")
-    debug_for_dev_mode: bool = Field(
+    editable_debug: bool = Field(
         default=False,
-        alias="debug-for-dev-mode",
-        description="Force rust debug profile when installing the Python project in development mode (aka editable installs)",
+        alias="editable-debug",
+        description="Use the Rust debug profile for editable installs.",
     )
     features: list[str] = Field(default_factory=list, description="Cargo features to enable.")
     all_features: bool = Field(default=False, alias="all-features", description="Enable all Cargo features.")
@@ -733,7 +733,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return artifact.manifest if artifact.manifest is not None else self.manifest
 
     def _artifact_profile(self, artifact: RustArtifactConfig) -> str:
-        if self._editable_install and (artifact.debug_for_dev_mode or self.debug_for_dev_mode):
+        if self._editable_install and (artifact.editable_debug or self.editable_debug):
             return "debug"
         build_type = artifact.build_type or self.build_type
         return artifact.profile or self.profile or build_type
@@ -910,7 +910,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             set_target_dir_env=set_target_dir_env,
         )
 
-    def generate(self, editable_install=False):
+    def set_editable_install(self, editable_install: bool) -> None:
+        self._editable_install = editable_install
+
+    def generate(self):
         if self._temporary_target_dir is not None:
             self._temporary_target_dir.cleanup()
             self._temporary_target_dir = None
@@ -923,8 +926,6 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         self._shared_scripts = {}
         self._artifact_manifest_records = []
         self._libraries = []
-        self._editable_install = editable_install
-
         global_target = self.target
         for artifact in self._configured_artifacts():
             if self._is_generated_artifact(artifact):

@@ -123,6 +123,31 @@ def test_build_plan_generates_cargo_invocation(tmp_path):
     ]
 
 
+def test_build_plan_uses_debug_profile_for_editable_install(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        profile="optimized",
+        editable_debug=True,
+    )
+    plan.set_editable_install(True)
+
+    assert plan.generate() == ["cargo rustc --target x86_64-unknown-linux-gnu -- --crate-type cdylib"]
+
+
+def test_build_plan_preserves_profile_for_standard_install(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        profile="optimized",
+        editable_debug=True,
+    )
+
+    assert plan.generate() == ["cargo rustc --profile optimized --target x86_64-unknown-linux-gnu -- --crate-type cdylib"]
+
+
 def test_build_plan_generates_manifest_and_cargo_options(tmp_path):
     plan = HatchRustBuildPlan(
         module="project",

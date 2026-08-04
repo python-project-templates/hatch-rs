@@ -307,8 +307,8 @@ class TestProject:
         assert completed.returncode != 0
         assert "validation_failure_missing_symbol" in completed.stdout
 
-    def test_debug_for_dev_mode(self):
-        project_folder = "test_project_debug_for_dev_mode"
+    def test_editable_debug(self):
+        project_folder = "test_project_editable_debug"
         # cleanup
         rmtree(f"hatch_rs/tests/{project_folder}/target", ignore_errors=True)
         rmtree(f"hatch_rs/tests/{project_folder}/project/extension.abi3.so", ignore_errors=True)
@@ -331,7 +331,7 @@ class TestProject:
             env=_subprocess_env(),
         )
 
-        # check debug-for-dev-mode option was honored
+        # check editable-debug option was honored
         assert Path(f"hatch_rs/tests/{project_folder}/target/debug").exists()
         assert not Path(f"hatch_rs/tests/{project_folder}/target/release").exists()
 
