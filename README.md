@@ -155,5 +155,26 @@ test-command = "python -c \"import project\""
 When cross-building outside cibuildwheel, set `wheel-platform-tag` only if the
 final wheel platform tag is known, for example `manylinux_2_28_x86_64`.
 
+### Pyodide
+
+Pyodide builds are detected from `CARGO_BUILD_TARGET=wasm32-unknown-emscripten`.
+The hook collects Cargo's `.wasm` cdylib, gives it CPython's Emscripten extension
+suffix, and uses `PYODIDE_ABI_VERSION` for the `pyemscripten` wheel platform tag.
+No project-specific build hook is required.
+
+```toml
+[tool.hatch.build.hooks.hatch-rs]
+module = "project"
+path = "."
+
+[tool.cibuildwheel.pyodide]
+xbuild-tools = ["cargo", "rustc", "rustup"]
+test-command = "python -c 'import project.project'"
+```
+
+Rust 1.95 or newer is required to emit an Emscripten shared library for a
+`cdylib` automatically. `wheel-platform-tag` remains available as an explicit
+override when building outside Pyodide's configured environment.
+
 > [!NOTE]
 > This library was generated using [copier](https://copier.readthedocs.io/en/stable/) from the [Base Python Project Template repository](https://github.com/python-project-templates/base).
