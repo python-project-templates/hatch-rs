@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from json import loads
 from pathlib import Path, PureWindowsPath
+from sys import version_info
 
 import pytest
 
@@ -11,6 +12,8 @@ from hatch_rs.structs import HatchRustBuildPlan, executable_name, python_extensi
 @pytest.fixture(autouse=True)
 def clear_cargo_target_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("CARGO_BUILD_TARGET", raising=False)
+    monkeypatch.delenv("PYODIDE_ABI_VERSION", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -44,6 +47,12 @@ def test_resolve_target_triple_uses_explicit_musl_target():
     assert resolve_target_triple("aarch64-unknown-linux-musl", platform="linux", machine="x86_64") == "aarch64-unknown-linux-musl"
 
 
+def test_resolve_target_triple_uses_cargo_build_target(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("CARGO_BUILD_TARGET", "wasm32-unknown-emscripten")
+
+    assert resolve_target_triple(platform="linux", machine="x86_64") == "wasm32-unknown-emscripten"
+
+
 def test_resolve_target_triple_rejects_wheel_platform_tag_as_rust_target():
     with pytest.raises(ValueError, match="manylinux.*wheel platform tags"):
         resolve_target_triple("x86_64-manylinux_2_28")
@@ -75,6 +84,17 @@ def test_wheel_tag_uses_auditwheel_platform(monkeypatch: pytest.MonkeyPatch):
     assert wheel_tag(target="x86_64-unknown-linux-gnu", python_version=(3, 11)) == "cp311-cp311-manylinux_2_28_x86_64"
 
 
+def test_wheel_tag_uses_pyodide_abi(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PYODIDE_ABI_VERSION", "2026_0")
+
+    assert wheel_tag(abi3=True, target="wasm32-unknown-emscripten", python_version=(3, 14)) == "cp314-cp314-pyemscripten_2026_0_wasm32"
+
+
+def test_wheel_tag_requires_emscripten_platform_version():
+    with pytest.raises(ValueError, match="PYODIDE_ABI_VERSION"):
+        wheel_tag(target="wasm32-unknown-emscripten", python_version=(3, 14))
+
+
 @pytest.mark.parametrize(
     ("platform", "expected"),
     [
@@ -83,6 +103,7 @@ def test_wheel_tag_uses_auditwheel_platform(monkeypatch: pytest.MonkeyPatch):
         ("linux", "libmylib.so"),
         ("manylinux_2_28_x86_64", "libmylib.so"),
         ("musllinux_1_2_x86_64", "libmylib.so"),
+        ("emscripten", "mylib.wasm"),
     ],
 )
 def test_shared_library_name(platform: str, expected: str):
@@ -96,10 +117,30 @@ def test_shared_library_name(platform: str, expected: str):
         ("project", "linux", False, "project.so"),
         ("libproject", "darwin", True, "project.abi3.so"),
         ("project", "win32", True, "project.pyd"),
+        ("project", "emscripten", True, "project.cpython-314-wasm32-emscripten.so"),
     ],
 )
 def test_python_extension_name(source_stem: str, platform: str, abi3: bool, expected: str):
-    assert python_extension_name(source_stem, abi3=abi3, platform=platform) == expected
+    assert python_extension_name(source_stem, abi3=abi3, platform=platform, python_version=(3, 14)) == expected
+
+
+def test_build_plan_copies_emscripten_python_extension(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="wasm32-unknown-emscripten",
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "target" / "wasm32-unknown-emscripten" / "release" / "project.wasm"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"webassembly")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    copied = tmp_path / "project" / f"project.cpython-{version_info.major}{version_info.minor}-wasm32-emscripten.so"
+    assert copied.read_bytes() == b"webassembly"
+    assert plan.libraries == [f"project/{copied.name}"]
 
 
 @pytest.mark.parametrize(

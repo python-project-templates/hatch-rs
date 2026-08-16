@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-rs-test-pyodide"
+version = "0.1.0"
+requires-python = ">=3.14"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyodide_project"]
+
+[tool.hatch.build.hooks.hatch-rs]
+abi3 = true
+module = "pyodide_project"
+path = "."

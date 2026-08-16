@@ -41,7 +41,7 @@ CompilerToolchain = Literal["gcc", "clang", "msvc"]
 InstallScheme = Literal["package", "shared-data", "shared-scripts", "validate-only"]
 Language = Literal["c", "c++"]
 Binding = Literal["cpython", "pybind11", "nanobind", "generic"]
-Platform = Literal["linux", "darwin", "win32"]
+Platform = Literal["linux", "darwin", "win32", "emscripten"]
 
 
 @dataclass(frozen=True)
@@ -149,6 +149,8 @@ def _normalize_platform(platform: str) -> str:
         return "darwin"
     if normalized.startswith(("linux", "manylinux", "musllinux")):
         return "linux"
+    if normalized.startswith(("emscripten", "pyemscripten")):
+        return "emscripten"
     return normalized
 
 
@@ -181,6 +183,8 @@ def _explicit_target(target: str, *, platform: str, machine: str) -> ResolvedTar
         return ResolvedTarget(platform="darwin", machine=_target_machine(target), triple=target)
     if "-linux-" in target:
         return ResolvedTarget(platform="linux", machine=_target_machine(target), triple=target)
+    if target.endswith("-emscripten"):
+        return ResolvedTarget(platform="emscripten", machine=_target_machine(target), triple=target)
     return ResolvedTarget(platform=platform, machine=machine, triple=target)
 
 
@@ -198,6 +202,8 @@ def shared_library_name(library: str, *, platform: str | None = None) -> str:
         return f"lib{library}.dylib"
     if platform == "linux":
         return f"lib{library}.so"
+    if platform == "emscripten":
+        return f"{library}.wasm"
     raise ValueError(f"Unsupported platform: {platform}")
 
 
@@ -209,12 +215,21 @@ def executable_name(name: str, *, platform: str | None = None) -> str:
     return name
 
 
-def python_extension_name(source_stem: str, *, abi3: bool = False, platform: str | None = None) -> str:
+def python_extension_name(
+    source_stem: str,
+    *,
+    abi3: bool = False,
+    platform: str | None = None,
+    python_version: tuple[int, int] | None = None,
+) -> str:
     """Render the Python extension filename for a Cargo cdylib artifact stem."""
     platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     module_name = source_stem.removeprefix("lib")
     if platform == "win32":
         return f"{module_name}.pyd"
+    if platform == "emscripten":
+        major, minor = python_version or (version_info.major, version_info.minor)
+        return f"{module_name}.cpython-{major}{minor}-wasm32-emscripten.so"
     if abi3:
         return f"{module_name}.abi3.so"
     return f"{module_name}.so"
@@ -224,6 +239,7 @@ def _resolve_target(target: str | None = None, *, platform: str | None = None, m
     raw_platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
     platform = _normalize_platform(raw_platform)
     machine = _normalize_machine(machine or environ.get("HATCH_RUST_MACHINE", platform_machine()))
+    target = target or environ.get("CARGO_BUILD_TARGET")
 
     if target:
         return _explicit_target(target, platform=platform, machine=machine)
@@ -292,6 +308,13 @@ def _wheel_platform(resolved_target: ResolvedTarget, platform_tag: str | None) -
             raise _unsupported_machine("macOS wheel", resolved_target.machine, darwin_arches) from error
     if resolved_target.platform == "linux":
         return _linux_wheel_platform(resolved_target, platform_tag)
+    if resolved_target.platform == "emscripten":
+        if platform_tag:
+            return platform_tag
+        abi_version = environ.get("PYODIDE_ABI_VERSION")
+        if not abi_version:
+            raise ValueError("PYODIDE_ABI_VERSION or wheel-platform-tag is required for Emscripten wheel tags.")
+        return f"pyemscripten_{abi_version}_wasm32"
     raise ValueError(f"Unsupported platform for wheel tag: {resolved_target.platform}")
 
 
@@ -308,7 +331,7 @@ def wheel_tag(
     """Render a wheel tag for the resolved Rust target using packaging.tags."""
     resolved = resolved_target or _resolve_target(target, platform=platform, machine=machine)
     version = python_version or (version_info.major, version_info.minor)
-    abis = ["abi3"] if abi3 else None
+    abis = [f"cp{version[0]}{version[1]}"] if resolved.platform == "emscripten" else (["abi3"] if abi3 else None)
     return str(next(cpython_tags(python_version=version, abis=abis, platforms=[_wheel_platform(resolved, platform_tag)])))
 
 
@@ -319,6 +342,8 @@ def _artifact_patterns(platform: str) -> tuple[str, ...]:
         return ("*.so",)
     if platform == "darwin":
         return ("*.dylib",)
+    if platform == "emscripten":
+        return ("*.wasm",)
     raise ValueError(f"Unsupported platform machine: {platform_machine()}")
 
 
