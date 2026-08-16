@@ -122,7 +122,9 @@ jobs:
           rustup target add wasm32-unknown-emscripten
 
       - name: Build Pyodide fixture
-        run: pyodide build hatch_rs/tests/test_project_pyodide --outdir dist/pyodide --no-isolation --skip-dependency-check
+        run: |
+          mkdir -p dist/pyodide
+          pyodide build hatch_rs/tests/test_project_pyodide --outdir dist/pyodide --no-isolation --skip-dependency-check
 
       - name: Test in Pyodide
         run: |
