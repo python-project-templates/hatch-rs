@@ -451,6 +451,11 @@ class RustArtifactConfig(BaseModel):
     cargo_target_kind: CargoTargetKind | None = Field(default=None, alias="cargo-target-kind", description="Cargo target selector kind.")
     cargo_target: str | None = Field(default=None, alias="cargo-target", description="Cargo target selector name.")
     crate_type: str = Field(default="cdylib", alias="crate-type", description="Rust crate type to pass through to rustc.")
+    python_extension_name: str | None = Field(
+        default=None,
+        alias="python-extension-name",
+        description="Module stem for {python_extension_name}, when the importable name differs from the Cargo artifact name.",
+    )
     install_scheme: InstallScheme = Field(
         default="package",
         alias="install-scheme",
@@ -1029,7 +1034,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         import_library: str = "",
     ) -> Path:
         artifact = planned_artifact.artifact
-        python_extension = python_extension_name(_cargo_artifact_stem(source), abi3=self.abi3, platform=planned_artifact.resolved_target.platform)
+        extension_stem = artifact.python_extension_name or _cargo_artifact_stem(source)
+        python_extension = python_extension_name(extension_stem, abi3=self.abi3, platform=planned_artifact.resolved_target.platform)
         values = {
             "module": self.module,
             "target": planned_artifact.resolved_target.triple,
