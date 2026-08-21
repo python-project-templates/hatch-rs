@@ -156,6 +156,34 @@ def test_executable_name(platform: str, expected: str):
     assert executable_name("mycli", platform=platform) == expected
 
 
+def test_python_extension_name_overrides_cargo_artifact_stem(tmp_path):
+    # The cdylib is named apart from the core library it links, so the two do
+    # not collide in target/, but it still has to import under the module name.
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[
+            {
+                "name": "project_ext",
+                "python-extension-name": "project",
+                "destination": "{module}/{python_extension_name}",
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    source = tmp_path / "target" / "x86_64-unknown-linux-gnu" / "release" / "libproject_ext.so"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"extension")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    copied = tmp_path / "project" / "project.so"
+    assert copied.read_bytes() == b"extension"
+    assert plan.libraries == ["project/project.so"]
+
+
 def test_build_plan_generates_cargo_invocation(tmp_path):
     plan = HatchRustBuildPlan(module="project", path=tmp_path, target="x86_64-apple-darwin")
 
