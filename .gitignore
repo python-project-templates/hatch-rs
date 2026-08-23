@@ -146,11 +146,7 @@ hatch_rs/labextension
 
 # Emscripten SDK (locally installed)
 emsdk
-<<<<<<< before updating
-.pyodide_build
-=======
 .pyodide_build/
->>>>>>> after updating
 
 # Mac
 .DS_Store
