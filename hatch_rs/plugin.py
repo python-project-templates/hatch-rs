@@ -12,7 +12,7 @@ from .utils import import_string
 __all__ = ("HatchRustBuildHook",)
 
 
-class HatchRustBuildHook(BuildHookInterface[HatchRustBuildConfig]):
+class HatchRustBuildHook(BuildHookInterface):
     """The hatch-rust build hook."""
 
     PLUGIN_NAME = "hatch-rs"
