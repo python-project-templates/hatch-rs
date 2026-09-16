@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "hatchling",
+    "hatchling!=1.32.1",
 ]
 build-backend = "hatchling.build"
 
@@ -34,7 +34,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "hatchling>=1.20",
+    "hatchling>=1.20,!=1.32.1",
     "packaging",
     "pydantic",
 ]
@@ -46,7 +46,7 @@ develop = [
     "check-dist",
     "codespell",
     "editables",
-    "hatchling",
+    "hatchling!=1.32.1",
     "mdformat",
     "mdformat-tables>=1",
     "pip",
