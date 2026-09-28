@@ -6,7 +6,14 @@ from sys import version_info
 
 import pytest
 
-from hatch_rs.structs import HatchRustBuildPlan, executable_name, python_extension_name, resolve_target_triple, shared_library_name, wheel_tag
+from hatch_rs.structs import (
+    HatchRustBuildPlan,
+    executable_name,
+    python_extension_name,
+    resolve_target_triple,
+    shared_library_name,
+    wheel_tag,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -14,6 +21,7 @@ def clear_cargo_target_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     monkeypatch.delenv("CARGO_BUILD_TARGET", raising=False)
     monkeypatch.delenv("PYODIDE_ABI_VERSION", raising=False)
+    monkeypatch.delenv("HATCH_RUST_FREE_THREADED", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -70,12 +78,47 @@ def test_resolve_target_triple_rejects_macos_universal2_as_rust_target():
         ({"target": "aarch64-apple-darwin"}, "cp311-cp311-macosx_11_0_arm64"),
         ({"target": "x86_64-pc-windows-msvc"}, "cp311-cp311-win_amd64"),
         ({"abi3": True, "target": "aarch64-unknown-linux-musl"}, "cp311-abi3-musllinux_1_2_aarch64"),
-        ({"target": "x86_64-unknown-linux-gnu", "platform_tag": "manylinux_2_28_x86_64"}, "cp311-cp311-manylinux_2_28_x86_64"),
+        (
+            {"target": "x86_64-unknown-linux-gnu", "platform_tag": "manylinux_2_28_x86_64"},
+            "cp311-cp311-manylinux_2_28_x86_64",
+        ),
+        (
+            {"abi3": True, "free_threaded": True, "target": "x86_64-unknown-linux-gnu", "python_version": (3, 15)},
+            "cp315-abi3t-linux_x86_64",
+        ),
+        (
+            {"abi3": True, "free_threaded": True, "target": "aarch64-apple-darwin", "python_version": (3, 15)},
+            "cp315-abi3t-macosx_11_0_arm64",
+        ),
+        (
+            {"abi3": True, "free_threaded": True, "target": "x86_64-pc-windows-msvc", "python_version": (3, 15)},
+            "cp315-abi3t-win_amd64",
+        ),
+        (
+            {"abi3": True, "free_threaded": True, "target": "x86_64-unknown-linux-gnu", "python_version": (3, 13)},
+            "cp313-cp313t-linux_x86_64",
+        ),
+        (
+            {"free_threaded": True, "target": "x86_64-unknown-linux-gnu", "python_version": (3, 15)},
+            "cp315-cp315t-linux_x86_64",
+        ),
     ],
 )
 def test_wheel_tag_uses_packaging_tags(monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, object], expected: str):
     monkeypatch.delenv("AUDITWHEEL_PLAT", raising=False)
-    assert wheel_tag(python_version=(3, 11), **kwargs) == expected
+    kwargs_copy = dict(kwargs)
+    python_version = kwargs_copy.pop("python_version", (3, 11))
+    assert wheel_tag(python_version=python_version, **kwargs_copy) == expected
+
+
+def test_wheel_tag_uses_free_threaded_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HATCH_RUST_FREE_THREADED", "1")
+    assert wheel_tag(abi3=True, target="aarch64-apple-darwin", python_version=(3, 15)) == "cp315-abi3t-macosx_11_0_arm64"
+
+
+def test_wheel_tag_rejects_free_threaded_for_python_under_313():
+    with pytest.raises(ValueError, match="Free-threaded builds require Python 3.13 or newer"):
+        wheel_tag(free_threaded=True, target="x86_64-unknown-linux-gnu", python_version=(3, 12))
 
 
 def test_wheel_tag_uses_auditwheel_platform(monkeypatch: pytest.MonkeyPatch):
@@ -122,6 +165,23 @@ def test_shared_library_name(platform: str, expected: str):
 )
 def test_python_extension_name(source_stem: str, platform: str, abi3: bool, expected: str):
     assert python_extension_name(source_stem, abi3=abi3, platform=platform, python_version=(3, 14)) == expected
+
+
+@pytest.mark.parametrize(
+    ("source_stem", "platform", "expected"),
+    [
+        ("libproject", "linux", "project.abi3t.so"),
+        ("libproject", "darwin", "project.abi3t.so"),
+        ("project", "win32", "project.pyd"),
+    ],
+)
+def test_python_extension_name_abi3t(source_stem: str, platform: str, expected: str):
+    assert python_extension_name(source_stem, abi3=True, free_threaded=True, platform=platform, python_version=(3, 15)) == expected
+
+
+def test_python_extension_name_rejects_free_threaded_for_python_under_313():
+    with pytest.raises(ValueError, match="Free-threaded builds require Python 3.13 or newer"):
+        python_extension_name("libproject", abi3=True, free_threaded=True, platform="linux", python_version=(3, 12))
 
 
 def test_build_plan_copies_emscripten_python_extension(tmp_path):

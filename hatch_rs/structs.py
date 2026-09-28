@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import sysconfig
 from ctypes import CDLL
 from dataclasses import dataclass
 from glob import glob
@@ -122,6 +124,42 @@ def _env_truthy(value: str | None) -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "off")
 
 
+def _resolve_free_threaded(
+    free_threaded: bool | None = None,
+    *,
+    python_version: tuple[int, int] | None = None,
+) -> bool:
+    """Return True when targeting or executing under free-threaded CPython."""
+    if free_threaded is not None:
+        if free_threaded and python_version is not None and python_version < (3, 13):
+            raise ValueError(f"Free-threaded builds require Python 3.13 or newer, got {python_version[0]}.{python_version[1]}.")
+        return free_threaded
+
+    if python_version is not None and python_version < (3, 13):
+        return False
+
+    env_val = environ.get("HATCH_RUST_FREE_THREADED")
+    if env_val is not None:
+        return _env_truthy(env_val)
+
+    if python_version is not None and python_version != (version_info.major, version_info.minor):
+        return False
+
+    if sysconfig.get_config_var("Py_GIL_DISABLED") == 1:
+        return True
+
+    if "t" in getattr(sys, "abiflags", ""):
+        return True
+
+    if hasattr(sys, "abi_info") and sys.abi_info.free_threaded:
+        return True
+
+    if hasattr(sys, "_is_gil_enabled"):
+        return not sys._is_gil_enabled()
+
+    return False
+
+
 def _normalize_machine(machine: str) -> str:
     normalized = machine.lower().replace("-", "_")
     aliases = {
@@ -219,19 +257,24 @@ def python_extension_name(
     source_stem: str,
     *,
     abi3: bool = False,
+    free_threaded: bool | None = None,
     platform: str | None = None,
     python_version: tuple[int, int] | None = None,
 ) -> str:
     """Render the Python extension filename for a Cargo cdylib artifact stem."""
     platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     module_name = source_stem.removeprefix("lib")
+    major, minor = python_version or (version_info.major, version_info.minor)
     if platform == "win32":
         return f"{module_name}.pyd"
     if platform == "emscripten":
-        major, minor = python_version or (version_info.major, version_info.minor)
         return f"{module_name}.cpython-{major}{minor}-wasm32-emscripten.so"
     if abi3:
-        return f"{module_name}.abi3.so"
+        return (
+            f"{module_name}.abi3t.so"
+            if _resolve_free_threaded(free_threaded, python_version=(major, minor)) and (major, minor) >= (3, 15)
+            else f"{module_name}.abi3.so"
+        )
     return f"{module_name}.so"
 
 
@@ -321,6 +364,7 @@ def _wheel_platform(resolved_target: ResolvedTarget, platform_tag: str | None) -
 def wheel_tag(
     *,
     abi3: bool = False,
+    free_threaded: bool | None = None,
     target: str | None = None,
     platform: str | None = None,
     machine: str | None = None,
@@ -331,7 +375,18 @@ def wheel_tag(
     """Render a wheel tag for the resolved Rust target using packaging.tags."""
     resolved = resolved_target or _resolve_target(target, platform=platform, machine=machine)
     version = python_version or (version_info.major, version_info.minor)
-    abis = [f"cp{version[0]}{version[1]}"] if resolved.platform == "emscripten" else (["abi3"] if abi3 else None)
+    is_freethreaded = _resolve_free_threaded(free_threaded, python_version=version)
+    if resolved.platform == "emscripten":
+        abis = [f"cp{version[0]}{version[1]}"]
+    elif abi3:
+        if is_freethreaded:
+            abis = ["abi3t"] if version >= (3, 15) else [f"cp{version[0]}{version[1]}t"]
+        else:
+            abis = ["abi3"]
+    elif is_freethreaded:
+        abis = [f"cp{version[0]}{version[1]}t"]
+    else:
+        abis = None
     return str(next(cpython_tags(python_version=version, abis=abis, platforms=[_wheel_platform(resolved, platform_tag)])))
 
 
@@ -645,6 +700,11 @@ class HatchRustBuildConfig(BaseModel):
     abi3: bool = Field(
         default=False,
         description="If True, build the extension with Python's ABI3 compatibility.",
+    )
+    free_threaded: bool | None = Field(
+        default=None,
+        alias="free-threaded",
+        description="If True, build for free-threaded CPython. If None, auto-detected from environment.",
     )
 
     target: str | None = Field(
@@ -1035,7 +1095,12 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
     ) -> Path:
         artifact = planned_artifact.artifact
         extension_stem = artifact.python_extension_name or _cargo_artifact_stem(source)
-        python_extension = python_extension_name(extension_stem, abi3=self.abi3, platform=planned_artifact.resolved_target.platform)
+        python_extension = python_extension_name(
+            extension_stem,
+            abi3=self.abi3,
+            free_threaded=self.free_threaded,
+            platform=planned_artifact.resolved_target.platform,
+        )
         values = {
             "module": self.module,
             "target": planned_artifact.resolved_target.triple,
