@@ -1,5 +1,5 @@
 from json import loads
-from os import environ, listdir
+from os import environ, listdir, pathsep
 from os.path import dirname
 from pathlib import Path
 from shutil import rmtree
@@ -18,9 +18,9 @@ def _subprocess_env():
     env = environ.copy()
     pythonpath = str(REPO_ROOT)
     if env.get("PYTHONPATH"):
-        pythonpath = f"{pythonpath}:{env['PYTHONPATH']}"
+        pythonpath = f"{pythonpath}{pathsep}{env['PYTHONPATH']}"
     env["PYTHONPATH"] = pythonpath
-    env["PATH"] = f"{dirname(executable)}:{env['PATH']}"
+    env["PATH"] = f"{dirname(executable)}{pathsep}{env['PATH']}"
     return env
 
 
@@ -319,6 +319,8 @@ class TestProject:
         # install project in development mode (editable install)
         check_call(
             [
+                executable,
+                "-m",
                 "pip",
                 "install",
                 "--verbose",
