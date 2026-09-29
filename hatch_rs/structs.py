@@ -17,7 +17,7 @@ from sys import platform as sys_platform, version_info
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
-from packaging.tags import cpython_tags, mac_platforms
+from packaging.tags import cpython_tags, mac_platforms, platform_tags
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 __all__ = (
@@ -104,6 +104,10 @@ LINUX_MUSL_TARGETS = {
     "i686": "i686-unknown-linux-musl",
     "aarch64": "aarch64-unknown-linux-musl",
     "armv7": "armv7-unknown-linux-musleabihf",
+    "loongarch64": "loongarch64-unknown-linux-musl",
+    "ppc64le": "powerpc64le-unknown-linux-musl",
+    "s390x": "s390x-unknown-linux-musl",
+    "riscv64": "riscv64gc-unknown-linux-musl",
 }
 
 WHEEL_ARCHES = {
@@ -111,6 +115,7 @@ WHEEL_ARCHES = {
     "i686": "i686",
     "aarch64": "aarch64",
     "armv7": "armv7l",
+    "loongarch64": "loongarch64",
     "ppc64le": "ppc64le",
     "s390x": "s390x",
     "riscv64": "riscv64",
@@ -160,6 +165,16 @@ def _resolve_free_threaded(
     return False
 
 
+def _is_musl_linux() -> bool:
+    """Return True if running in a musl Linux environment or container."""
+    auditwheel = environ.get("AUDITWHEEL_PLAT", "")
+    if auditwheel.startswith("musllinux"):
+        return True
+    if sys_platform == "linux":
+        return any(tag.startswith("musllinux") for tag in platform_tags())
+    return False
+
+
 def _normalize_machine(machine: str) -> str:
     normalized = machine.lower().replace("-", "_")
     aliases = {
@@ -185,7 +200,7 @@ def _normalize_platform(platform: str) -> str:
         return "win32"
     if normalized.startswith("macosx") or normalized == "darwin":
         return "darwin"
-    if normalized.startswith(("linux", "manylinux", "musllinux")):
+    if normalized.startswith(("linux", "manylinux", "musl")):
         return "linux"
     if normalized.startswith(("emscripten", "pyemscripten")):
         return "emscripten"
@@ -193,7 +208,7 @@ def _normalize_platform(platform: str) -> str:
 
 
 def _linux_targets_for_platform(platform: str) -> dict[str, str]:
-    if platform.lower().startswith("musllinux"):
+    if platform.lower().startswith("musl"):
         return LINUX_MUSL_TARGETS
     return LINUX_GNU_TARGETS
 
@@ -279,7 +294,9 @@ def python_extension_name(
 
 
 def _resolve_target(target: str | None = None, *, platform: str | None = None, machine: str | None = None) -> ResolvedTarget:
-    raw_platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
+    raw_platform = platform or environ.get("HATCH_RUST_PLATFORM")
+    if raw_platform is None:
+        raw_platform = "musllinux" if _is_musl_linux() else sys_platform
     platform = _normalize_platform(raw_platform)
     machine = _normalize_machine(machine or environ.get("HATCH_RUST_MACHINE", platform_machine()))
     target = target or environ.get("CARGO_BUILD_TARGET")
@@ -326,6 +343,12 @@ def _linux_wheel_platform(resolved_target: ResolvedTarget, platform_tag: str | N
     if arch is None:
         raise _unsupported_machine("Linux wheel", resolved_target.machine, WHEEL_ARCHES)
     if "musl" in resolved_target.triple:
+        detected_platform = next(
+            (tag for tag in platform_tags() if tag.startswith("musllinux_") and tag.endswith(f"_{arch}")),
+            None,
+        )
+        if detected_platform is not None:
+            return detected_platform
         return f"musllinux_1_2_{arch}"
     return f"linux_{arch}"
 
@@ -917,13 +940,36 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             build_command.append("--frozen")
         build_command.extend(self._artifact_cargo_args(artifact))
 
+        user_rustc_args = self._artifact_rustc_args(artifact)
+        user_crate_types = []
+        for index, argument in enumerate(user_rustc_args):
+            if argument == "--crate-type" and index + 1 < len(user_rustc_args):
+                user_crate_types.extend(user_rustc_args[index + 1].split(","))
+            elif argument.startswith("--crate-type="):
+                user_crate_types.extend(argument.split("=", 1)[1].split(","))
+        crate_types = {crate_type.strip() for crate_type in (user_crate_types or artifact.crate_type.split(","))}
+
         rustc_args = []
         if self._is_python_extension_artifact(artifact) and "apple" in resolved_target.triple:
             rustc_args.extend(("-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"))
-        rustc_args.extend(self._artifact_rustc_args(artifact))
+        if (
+            "musl" in resolved_target.triple
+            and not self._is_executable_artifact(artifact)
+            and (not crate_types.isdisjoint(("cdylib", "dylib", "proc-macro")) or self._is_python_extension_artifact(artifact))
+        ):
+            target_features = (
+                feature.strip().lstrip("+-")
+                for argument in user_rustc_args
+                if argument.startswith(("target-feature=", "-Ctarget-feature=", "--codegen=target-feature="))
+                for feature in argument.split("target-feature=", 1)[1].split(",")
+            )
+            if "crt-static" not in target_features:
+                rustc_args.extend(("-C", "target-feature=-crt-static"))
+        rustc_args.extend(user_rustc_args)
         # Executables (bin/example) are not crate-type artifacts; injecting
         # --crate-type would build them as a library instead of a binary.
-        if "--crate-type" not in rustc_args and not self._is_executable_artifact(artifact):
+        has_crate_type_arg = any(argument == "--crate-type" or argument.startswith("--crate-type=") for argument in user_rustc_args)
+        if not has_crate_type_arg and not self._is_executable_artifact(artifact):
             rustc_args.extend(("--crate-type", artifact.crate_type))
         if rustc_args:
             build_command.append("--")
