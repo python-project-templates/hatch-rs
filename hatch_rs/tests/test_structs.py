@@ -62,12 +62,20 @@ def test_resolve_target_triple_uses_cargo_build_target(monkeypatch: pytest.Monke
     assert resolve_target_triple(platform="linux", machine="x86_64") == "wasm32-unknown-emscripten"
 
 
-def test_resolve_target_triple_uses_musllinux_auditwheel_plat(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("AUDITWHEEL_PLAT", "musllinux_1_2_x86_64")
-    assert resolve_target_triple(machine="x86_64") == "x86_64-unknown-linux-musl"
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("x86_64", "x86_64-unknown-linux-musl"),
+        ("aarch64", "aarch64-unknown-linux-musl"),
+        ("ppc64le", "powerpc64le-unknown-linux-musl"),
+        ("s390x", "s390x-unknown-linux-musl"),
+        ("riscv64", "riscv64gc-unknown-linux-musl"),
+    ],
+)
+def test_resolve_target_triple_uses_musllinux_auditwheel_plat(monkeypatch: pytest.MonkeyPatch, machine: str, expected: str):
+    monkeypatch.setenv("AUDITWHEEL_PLAT", f"musllinux_1_2_{machine}")
 
-    monkeypatch.setenv("AUDITWHEEL_PLAT", "musllinux_1_2_aarch64")
-    assert resolve_target_triple(machine="aarch64") == "aarch64-unknown-linux-musl"
+    assert resolve_target_triple(machine=machine) == expected
 
 
 def test_resolve_target_triple_rejects_wheel_platform_tag_as_rust_target():
@@ -215,7 +223,7 @@ def test_build_plan_generates_musl_cdylib_flags(tmp_path):
     assert plan.generate() == ["cargo rustc --release --target x86_64-unknown-linux-musl -- -C target-feature=-crt-static --crate-type cdylib"]
 
 
-def test_build_plan_preserves_custom_target_feature_for_musl(tmp_path):
+def test_build_plan_preserves_explicit_crt_static_feature_for_musl(tmp_path):
     plan = HatchRustBuildPlan(
         module="project",
         path=tmp_path,
@@ -224,6 +232,19 @@ def test_build_plan_preserves_custom_target_feature_for_musl(tmp_path):
     )
 
     assert plan.generate() == ["cargo rustc --release --target x86_64-unknown-linux-musl -- -C target-feature=+crt-static --crate-type cdylib"]
+
+
+def test_build_plan_combines_musl_crt_flag_with_custom_target_features(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-musl",
+        rustc_args=["-C", "target-feature=+sse2"],
+    )
+
+    assert plan.generate() == [
+        "cargo rustc --release --target x86_64-unknown-linux-musl -- -C target-feature=-crt-static -C target-feature=+sse2 --crate-type cdylib"
+    ]
 
 
 def test_build_plan_does_not_disable_crt_static_for_musl_executable(tmp_path):

@@ -102,6 +102,9 @@ LINUX_MUSL_TARGETS = {
     "i686": "i686-unknown-linux-musl",
     "aarch64": "aarch64-unknown-linux-musl",
     "armv7": "armv7-unknown-linux-musleabihf",
+    "ppc64le": "powerpc64le-unknown-linux-musl",
+    "s390x": "s390x-unknown-linux-musl",
+    "riscv64": "riscv64gc-unknown-linux-musl",
 }
 
 WHEEL_ARCHES = {
@@ -877,8 +880,14 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             and not self._is_executable_artifact(artifact)
             and (artifact.crate_type == "cdylib" or self._is_python_extension_artifact(artifact))
         ):
-            user_rustc_args = " ".join(self._artifact_rustc_args(artifact))
-            if "target-feature" not in user_rustc_args:
+            user_rustc_args = self._artifact_rustc_args(artifact)
+            target_features = (
+                feature.strip().lstrip("+-")
+                for argument in user_rustc_args
+                if argument.startswith(("target-feature=", "-Ctarget-feature=", "--codegen=target-feature="))
+                for feature in argument.split("target-feature=", 1)[1].split(",")
+            )
+            if "crt-static" not in target_features:
                 rustc_args.extend(("-C", "target-feature=-crt-static"))
         rustc_args.extend(self._artifact_rustc_args(artifact))
         # Executables (bin/example) are not crate-type artifacts; injecting
