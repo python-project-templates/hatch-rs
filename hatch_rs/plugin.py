@@ -90,6 +90,7 @@ class HatchRustBuildHook(BuildHookInterface):
             build_data["pure_python"] = False
             build_data["tag"] = wheel_tag(
                 abi3=config.abi3,
+                free_threaded=config.free_threaded,
                 resolved_target=build_plan.resolved_target,
                 platform_tag=config.wheel_platform_tag,
             )
