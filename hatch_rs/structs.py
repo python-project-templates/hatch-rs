@@ -15,7 +15,7 @@ from sys import platform as sys_platform, version_info
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
-from packaging.tags import cpython_tags, mac_platforms
+from packaging.tags import cpython_tags, mac_platforms, platform_tags
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 __all__ = (
@@ -122,6 +122,16 @@ def _env_truthy(value: str | None) -> bool:
     return value.strip().lower() not in ("", "0", "false", "no", "off")
 
 
+def _is_musl_linux() -> bool:
+    """Return True if running in a musl Linux environment or container."""
+    auditwheel = environ.get("AUDITWHEEL_PLAT", "")
+    if auditwheel.startswith("musllinux"):
+        return True
+    if sys_platform == "linux":
+        return any(tag.startswith("musllinux") for tag in platform_tags())
+    return False
+
+
 def _normalize_machine(machine: str) -> str:
     normalized = machine.lower().replace("-", "_")
     aliases = {
@@ -147,7 +157,7 @@ def _normalize_platform(platform: str) -> str:
         return "win32"
     if normalized.startswith("macosx") or normalized == "darwin":
         return "darwin"
-    if normalized.startswith(("linux", "manylinux", "musllinux")):
+    if normalized.startswith(("linux", "manylinux", "musl")):
         return "linux"
     if normalized.startswith(("emscripten", "pyemscripten")):
         return "emscripten"
@@ -155,7 +165,7 @@ def _normalize_platform(platform: str) -> str:
 
 
 def _linux_targets_for_platform(platform: str) -> dict[str, str]:
-    if platform.lower().startswith("musllinux"):
+    if platform.lower().startswith("musl"):
         return LINUX_MUSL_TARGETS
     return LINUX_GNU_TARGETS
 
@@ -236,7 +246,9 @@ def python_extension_name(
 
 
 def _resolve_target(target: str | None = None, *, platform: str | None = None, machine: str | None = None) -> ResolvedTarget:
-    raw_platform = platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)
+    raw_platform = platform or environ.get("HATCH_RUST_PLATFORM")
+    if raw_platform is None:
+        raw_platform = "musllinux" if _is_musl_linux() else sys_platform
     platform = _normalize_platform(raw_platform)
     machine = _normalize_machine(machine or environ.get("HATCH_RUST_MACHINE", platform_machine()))
     target = target or environ.get("CARGO_BUILD_TARGET")
@@ -860,6 +872,14 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         rustc_args = []
         if self._is_python_extension_artifact(artifact) and "apple" in resolved_target.triple:
             rustc_args.extend(("-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"))
+        if (
+            "musl" in resolved_target.triple
+            and not self._is_executable_artifact(artifact)
+            and (artifact.crate_type == "cdylib" or self._is_python_extension_artifact(artifact))
+        ):
+            user_rustc_args = " ".join(self._artifact_rustc_args(artifact))
+            if "target-feature" not in user_rustc_args:
+                rustc_args.extend(("-C", "target-feature=-crt-static"))
         rustc_args.extend(self._artifact_rustc_args(artifact))
         # Executables (bin/example) are not crate-type artifacts; injecting
         # --crate-type would build them as a library instead of a binary.
