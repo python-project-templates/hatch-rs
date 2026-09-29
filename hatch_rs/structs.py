@@ -280,16 +280,15 @@ def python_extension_name(
     platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
     module_name = source_stem.removeprefix("lib")
     major, minor = python_version or (version_info.major, version_info.minor)
+    is_freethreaded = _resolve_free_threaded(free_threaded, python_version=(major, minor)) if abi3 else False
+    if abi3 and is_freethreaded and (major, minor) < (3, 15):
+        raise ValueError(f"ABI3 free-threaded builds require Python 3.15 or newer, got {major}.{minor}.")
     if platform == "win32":
         return f"{module_name}.pyd"
     if platform == "emscripten":
         return f"{module_name}.cpython-{major}{minor}-wasm32-emscripten.so"
     if abi3:
-        return (
-            f"{module_name}.abi3t.so"
-            if _resolve_free_threaded(free_threaded, python_version=(major, minor)) and (major, minor) >= (3, 15)
-            else f"{module_name}.abi3.so"
-        )
+        return f"{module_name}.abi3t.so" if is_freethreaded else f"{module_name}.abi3.so"
     return f"{module_name}.so"
 
 
@@ -399,13 +398,12 @@ def wheel_tag(
     resolved = resolved_target or _resolve_target(target, platform=platform, machine=machine)
     version = python_version or (version_info.major, version_info.minor)
     is_freethreaded = _resolve_free_threaded(free_threaded, python_version=version)
+    if abi3 and is_freethreaded and version < (3, 15):
+        raise ValueError(f"ABI3 free-threaded builds require Python 3.15 or newer, got {version[0]}.{version[1]}.")
     if resolved.platform == "emscripten":
         abis = [f"cp{version[0]}{version[1]}"]
     elif abi3:
-        if is_freethreaded:
-            abis = ["abi3t"] if version >= (3, 15) else [f"cp{version[0]}{version[1]}t"]
-        else:
-            abis = ["abi3"]
+        abis = ["abi3.abi3t"] if is_freethreaded else ["abi3"]
     elif is_freethreaded:
         abis = [f"cp{version[0]}{version[1]}t"]
     else:
@@ -831,7 +829,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return artifact.destination is not None and "{python_extension_name}" in artifact.destination
 
     def _is_executable_artifact(self, artifact: RustArtifactConfig) -> bool:
-        return artifact.cargo_target_kind in ("bin", "example")
+        return artifact.cargo_target_kind in ("bin", "example", "test", "bench")
 
     def _artifact_role(self, artifact: RustArtifactConfig) -> str:
         if self._is_generated_artifact(artifact):
@@ -1116,7 +1114,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         deps_dir = target_path / "deps"
         if deps_dir.is_dir() and (search_deps or not candidates):
             for candidate in deps_dir.glob(f"*{expected_path.suffix}"):
-                if candidate.is_file() and _cargo_artifact_stem(candidate) == expected_path.stem:
+                if candidate.is_file() and candidate.suffix == expected_path.suffix and _cargo_artifact_stem(candidate) == expected_path.stem:
                     candidates.append(candidate)
 
         if not candidates:
@@ -1138,6 +1136,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         source: Path,
         shared_library: str = "",
         import_library: str = "",
+        executable: str = "",
     ) -> Path:
         artifact = planned_artifact.artifact
         extension_stem = artifact.python_extension_name or _cargo_artifact_stem(source)
@@ -1155,7 +1154,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             "shared_library": shared_library,
             "import_library": import_library,
             "python_extension_name": python_extension,
-            "executable": source.name,
+            "executable": executable or source.name,
         }
         try:
             rendered = template.format(**values)
@@ -1423,7 +1422,12 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         executable = executable_name(name, platform=planned_artifact.resolved_target.platform)
         source = self._find_exact_artifact(target_path, executable, search_deps=artifact.search_deps, artifact=artifact)
         template = artifact.destination or self._default_executable_destination(artifact)
-        distribution_path = self._format_destination(template, planned_artifact=planned_artifact, source=source)
+        distribution_path = self._format_destination(
+            template,
+            planned_artifact=planned_artifact,
+            source=source,
+            executable=executable,
+        )
         return self._place_artifact(
             source,
             distribution_path,

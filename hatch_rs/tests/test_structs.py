@@ -103,19 +103,15 @@ def test_resolve_target_triple_rejects_macos_universal2_as_rust_target():
         ),
         (
             {"abi3": True, "free_threaded": True, "target": "x86_64-unknown-linux-gnu", "python_version": (3, 15)},
-            "cp315-abi3t-linux_x86_64",
+            "cp315-abi3.abi3t-linux_x86_64",
         ),
         (
             {"abi3": True, "free_threaded": True, "target": "aarch64-apple-darwin", "python_version": (3, 15)},
-            "cp315-abi3t-macosx_11_0_arm64",
+            "cp315-abi3.abi3t-macosx_11_0_arm64",
         ),
         (
             {"abi3": True, "free_threaded": True, "target": "x86_64-pc-windows-msvc", "python_version": (3, 15)},
-            "cp315-abi3t-win_amd64",
-        ),
-        (
-            {"abi3": True, "free_threaded": True, "target": "x86_64-unknown-linux-gnu", "python_version": (3, 13)},
-            "cp313-cp313t-linux_x86_64",
+            "cp315-abi3.abi3t-win_amd64",
         ),
         (
             {"free_threaded": True, "target": "x86_64-unknown-linux-gnu", "python_version": (3, 15)},
@@ -132,7 +128,18 @@ def test_wheel_tag_uses_packaging_tags(monkeypatch: pytest.MonkeyPatch, kwargs: 
 
 def test_wheel_tag_uses_free_threaded_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HATCH_RUST_FREE_THREADED", "1")
-    assert wheel_tag(abi3=True, target="aarch64-apple-darwin", python_version=(3, 15)) == "cp315-abi3t-macosx_11_0_arm64"
+    assert wheel_tag(abi3=True, target="aarch64-apple-darwin", python_version=(3, 15)) == "cp315-abi3.abi3t-macosx_11_0_arm64"
+
+
+@pytest.mark.parametrize("python_version", [(3, 13), (3, 14)])
+def test_wheel_tag_rejects_abi3_free_threaded_before_python_315(python_version: tuple[int, int]):
+    with pytest.raises(ValueError, match="ABI3 free-threaded builds require Python 3.15 or newer"):
+        wheel_tag(
+            abi3=True,
+            free_threaded=True,
+            target="x86_64-unknown-linux-gnu",
+            python_version=python_version,
+        )
 
 
 def test_wheel_tag_rejects_free_threaded_for_python_under_313():
@@ -207,6 +214,18 @@ def test_python_extension_name_abi3t(source_stem: str, platform: str, expected: 
 def test_python_extension_name_rejects_free_threaded_for_python_under_313():
     with pytest.raises(ValueError, match="Free-threaded builds require Python 3.13 or newer"):
         python_extension_name("libproject", abi3=True, free_threaded=True, platform="linux", python_version=(3, 12))
+
+
+@pytest.mark.parametrize("python_version", [(3, 13), (3, 14)])
+def test_python_extension_name_rejects_abi3_free_threaded_before_python_315(python_version: tuple[int, int]):
+    with pytest.raises(ValueError, match="ABI3 free-threaded builds require Python 3.15 or newer"):
+        python_extension_name(
+            "libproject",
+            abi3=True,
+            free_threaded=True,
+            platform="linux",
+            python_version=python_version,
+        )
 
 
 def test_build_plan_copies_emscripten_python_extension(tmp_path):
@@ -364,6 +383,34 @@ def test_build_plan_does_not_disable_crt_static_for_musl_executable(tmp_path):
     assert plan.generate() == ["cargo rustc --bin mycli --release --target x86_64-unknown-linux-musl"]
     invocation = plan.cargo_invocations[0]
     assert "target-feature=-crt-static" not in invocation.env.get("RUSTFLAGS", "")
+
+
+@pytest.mark.parametrize("cargo_target_kind", ["test", "bench"])
+def test_build_plan_handles_test_and_bench_as_executables(tmp_path, cargo_target_kind: str):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-musl",
+        artifacts=[
+            RustArtifactConfig(
+                name="check",
+                cargo_target="check",
+                cargo_target_kind=cargo_target_kind,
+            )
+        ],
+    )
+
+    assert plan.generate() == [f"cargo rustc --{cargo_target_kind} check --release --target x86_64-unknown-linux-musl"]
+    planned_artifact = plan._artifact_plans[0]
+    deps = tmp_path / "target" / "x86_64-unknown-linux-musl" / "release" / "deps"
+    deps.mkdir(parents=True)
+    source = deps / "check-0123456789abcdef"
+    source.write_bytes(b"executable")
+    source.with_suffix(".d").write_text("dependency metadata")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    assert (tmp_path / "project" / "check").read_bytes() == b"executable"
 
 
 def test_build_plan_uses_debug_profile_for_editable_install(tmp_path):
