@@ -67,6 +67,7 @@ def test_resolve_target_triple_uses_cargo_build_target(monkeypatch: pytest.Monke
     [
         ("x86_64", "x86_64-unknown-linux-musl"),
         ("aarch64", "aarch64-unknown-linux-musl"),
+        ("loongarch64", "loongarch64-unknown-linux-musl"),
         ("ppc64le", "powerpc64le-unknown-linux-musl"),
         ("s390x", "s390x-unknown-linux-musl"),
         ("riscv64", "riscv64gc-unknown-linux-musl"),
@@ -107,6 +108,12 @@ def test_wheel_tag_uses_auditwheel_platform(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AUDITWHEEL_PLAT", "manylinux_2_28_x86_64")
 
     assert wheel_tag(target="x86_64-unknown-linux-gnu", python_version=(3, 11)) == "cp311-cp311-manylinux_2_28_x86_64"
+
+
+def test_wheel_tag_uses_detected_musllinux_version(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("hatch_rs.structs.platform_tags", lambda: iter(["linux_x86_64", "musllinux_1_1_x86_64"]))
+
+    assert wheel_tag(target="x86_64-unknown-linux-musl", python_version=(3, 11)) == "cp311-cp311-musllinux_1_1_x86_64"
 
 
 def test_wheel_tag_uses_pyodide_abi(monkeypatch: pytest.MonkeyPatch):
@@ -245,6 +252,45 @@ def test_build_plan_combines_musl_crt_flag_with_custom_target_features(tmp_path)
     assert plan.generate() == [
         "cargo rustc --release --target x86_64-unknown-linux-musl -- -C target-feature=-crt-static -C target-feature=+sse2 --crate-type cdylib"
     ]
+
+
+def test_build_plan_detects_cdylib_in_multiple_crate_types(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-musl",
+        artifacts=[{"name": "project", "crate-type": "staticlib,cdylib"}],
+    )
+
+    assert plan.generate() == [
+        "cargo rustc --release --target x86_64-unknown-linux-musl -- -C target-feature=-crt-static --crate-type staticlib,cdylib"
+    ]
+
+
+@pytest.mark.parametrize("crate_type", ["dylib", "proc-macro"])
+def test_build_plan_disables_static_crt_for_other_dynamic_crate_types(tmp_path, crate_type: str):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-musl",
+        artifacts=[{"name": "project", "crate-type": crate_type}],
+    )
+
+    assert "target-feature=-crt-static" in plan.generate()[0]
+
+
+@pytest.mark.parametrize("rustc_args", [["--crate-type", "staticlib"], ["--crate-type=staticlib"]])
+def test_build_plan_preserves_static_crt_for_explicit_staticlib(tmp_path, rustc_args: list[str]):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-musl",
+        artifacts=[{"name": "project", "rustc-args": rustc_args}],
+    )
+
+    command = plan.generate()[0]
+    assert "target-feature=-crt-static" not in command
+    assert command.count("--crate-type") == 1
 
 
 def test_build_plan_does_not_disable_crt_static_for_musl_executable(tmp_path):
