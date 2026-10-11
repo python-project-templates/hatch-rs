@@ -3,7 +3,7 @@ from json import loads
 from os import environ, listdir, pathsep
 from os.path import dirname
 from pathlib import Path
-from shutil import copyfile, rmtree, which
+from shutil import rmtree, which
 from subprocess import PIPE, STDOUT, check_call, run
 from sys import executable, modules, path, platform, version_info
 from zipfile import ZipFile
@@ -28,7 +28,8 @@ def _subprocess_env():
 class TestProject:
     @pytest.mark.skipif(which("cargo-bundle-licenses") is None, reason="cargo-bundle-licenses CLI is not installed")
     @pytest.mark.parametrize("workspace", [False, True])
-    def test_cargo_licenses_in_wheel_built_from_sdist(self, tmp_path, workspace):
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+    def test_cargo_licenses_in_wheel_built_from_sdist(self, tmp_path, workspace, newline):
         package = tmp_path / "license_project"
         package.mkdir()
         (package / "__init__.py").write_text("")
@@ -46,12 +47,13 @@ class TestProject:
         )
         if workspace:
             (rust / "Cargo.toml").write_text('[workspace]\nmembers = ["app", "deps/*"]\nresolver = "2"\n')
+        license_bytes = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8").replace("\n", newline).encode("utf-8")
         for name in ("licensed-dependency", "extra-dependency"):
             dependency = rust / "deps" / name
             (dependency / "src").mkdir(parents=True)
             (dependency / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "1.0.0"\nedition = "2021"\nlicense = "Apache-2.0"\n')
             (dependency / "src/lib.rs").write_text("pub fn answer() -> u32 { 42 }\n")
-            copyfile(REPO_ROOT / "LICENSE", dependency / "LICENSE")
+            (dependency / "LICENSE").write_bytes(license_bytes)
         (tmp_path / "pyproject.toml").write_text(
             '[build-system]\nrequires = ["hatchling", "hatch-rs"]\nbuild-backend = "hatchling.build"\n'
             '[project]\nname = "license-project"\nversion = "0.1.0"\n'
@@ -76,7 +78,7 @@ class TestProject:
             manifest = loads(wheel.read("license_project/lib/hatch-rs-artifacts.json"))
         assert {library["package_name"] for library in bundle["third_party_libraries"]} == {"licensed-dependency", "extra-dependency"}
         for library in bundle["third_party_libraries"]:
-            assert library["licenses"][0]["text"] == (REPO_ROOT / "LICENSE").read_text()
+            assert library["licenses"][0]["text"].encode("utf-8") == license_bytes
         assert any(record["role"] == "third-party-licenses" for record in manifest["artifacts"])
 
     @pytest.mark.parametrize(
