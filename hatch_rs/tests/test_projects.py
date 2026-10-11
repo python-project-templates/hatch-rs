@@ -1,3 +1,4 @@
+from importlib import import_module
 from json import loads
 from os import environ, listdir, pathsep
 from os.path import dirname
@@ -77,9 +78,9 @@ class TestProject:
         # import
         here = Path(__file__).parent / project_folder
         path.insert(0, str(here))
-        import project.project
+        project = import_module("project.project")
 
-        assert project.project.hello() == "A string"
+        assert project.hello() == "A string"
 
     def test_cargo_controls_manifest_rustc_args_and_isolated_target_dir(self):
         project_folder = "test_project_cargo_controls"
@@ -141,7 +142,7 @@ class TestProject:
         # import
         here = Path(__file__).parent / project_folder
         path.insert(0, str(here))
-        import cargo_controls_project
+        cargo_controls_project = import_module("cargo_controls_project")
 
         assert cargo_controls_project.hello() == "Cargo controls 1"
         assert cargo_controls_project.compile_env() == "enabled"
@@ -217,7 +218,7 @@ class TestProject:
         # import
         here = Path(__file__).parent / project_folder
         path.insert(0, str(here))
-        import c_abi_bundle_project
+        c_abi_bundle_project = import_module("c_abi_bundle_project")
 
         assert c_abi_bundle_project.extension_answer() == 42
         assert c_abi_bundle_project.shared_answer() == 7
@@ -274,7 +275,7 @@ class TestProject:
         # import
         here = Path(__file__).parent / project_folder
         path.insert(0, str(here))
-        import generated_files_project
+        generated_files_project = import_module("generated_files_project")
 
         assert generated_files_project.generated_text() == "generated package data"
 
@@ -340,6 +341,6 @@ class TestProject:
         # import
         here = Path(__file__).parent / project_folder
         path.insert(0, str(here))
-        import project.extension
+        extension = import_module("project.extension")
 
-        assert project.extension.hello() == "A string"
+        assert extension.hello() == "A string"
