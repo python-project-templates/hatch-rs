@@ -3,10 +3,12 @@ from __future__ import annotations
 from json import loads
 from pathlib import Path, PureWindowsPath
 from sys import version_info
+from typing import Any
 
 import pytest
 
 from hatch_rs.structs import (
+    CargoTargetKind,
     HatchRustBuildPlan,
     RustArtifactConfig,
     executable_name,
@@ -119,7 +121,7 @@ def test_resolve_target_triple_rejects_macos_universal2_as_rust_target():
         ),
     ],
 )
-def test_wheel_tag_uses_packaging_tags(monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, object], expected: str):
+def test_wheel_tag_uses_packaging_tags(monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any], expected: str):
     monkeypatch.delenv("AUDITWHEEL_PLAT", raising=False)
     kwargs_copy = dict(kwargs)
     python_version = kwargs_copy.pop("python_version", (3, 11))
@@ -226,6 +228,14 @@ def test_python_extension_name_rejects_abi3_free_threaded_before_python_315(pyth
             platform="linux",
             python_version=python_version,
         )
+
+
+@pytest.mark.parametrize("config", [{"module": "project"}, {"module": "project", "path": None}])
+def test_build_plan_defaults_to_working_directory(tmp_path, monkeypatch, config):
+    monkeypatch.chdir(tmp_path)
+    plan = HatchRustBuildPlan(**config)
+    plan.generate()
+    assert plan.cargo_invocations[0].cwd == tmp_path
 
 
 def test_build_plan_copies_emscripten_python_extension(tmp_path):
@@ -386,7 +396,7 @@ def test_build_plan_does_not_disable_crt_static_for_musl_executable(tmp_path):
 
 
 @pytest.mark.parametrize("cargo_target_kind", ["test", "bench"])
-def test_build_plan_handles_test_and_bench_as_executables(tmp_path, cargo_target_kind: str):
+def test_build_plan_handles_test_and_bench_as_executables(tmp_path, cargo_target_kind: CargoTargetKind):
     plan = HatchRustBuildPlan(
         module="project",
         path=tmp_path,

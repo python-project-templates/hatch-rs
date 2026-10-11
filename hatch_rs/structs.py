@@ -683,7 +683,7 @@ class HatchRustBuildConfig(BaseModel):
     name: str | None = Field(default=None)
 
     module: str = Field(description="Python module name for the Rust extension.")
-    path: Path | None = Field(default=None, description="Path to the project root directory.")
+    path: Path = Field(default_factory=Path.cwd, description="Path to the project root directory.")
     manifest: Path | None = Field(default=None, description="Path to Cargo.toml, relative to path unless absolute.")
     build_type: BuildType = Field(default="release", alias="build-type")
     profile: str | None = Field(default=None, description="Cargo profile to build. Overrides build_type when set.")

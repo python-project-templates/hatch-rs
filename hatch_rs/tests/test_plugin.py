@@ -1,3 +1,5 @@
+from hatchling.metadata.core import ProjectMetadata
+
 from hatch_rs.plugin import HatchRustBuildHook
 
 
@@ -21,16 +23,12 @@ def test_custom_build_plan_generate_keeps_no_argument_contract(monkeypatch, tmp_
         def cleanup(self):
             pass
 
-    class Metadata:
-        def __init__(self):
-            self.config = {"project": {"name": "project"}}
-
     monkeypatch.setattr("hatch_rs.plugin.import_string", lambda path: CustomBuildPlan)
     hook = HatchRustBuildHook(
         root=str(tmp_path),
         config={"module": "project", "path": str(tmp_path), "build-plan-class": "tests.CustomBuildPlan"},
         build_config=None,
-        metadata=Metadata(),
+        metadata=ProjectMetadata(str(tmp_path), None, {"project": {"name": "project", "version": "0.1.0"}}),
         directory=str(tmp_path),
         target_name="wheel",
     )
