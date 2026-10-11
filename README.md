@@ -47,6 +47,72 @@ destination = "project/lib/{shared_library}"
 Destination templates support `{module}`, `{target}`, `{profile}`, `{name}`,
 `{shared_library}`, `{import_library}`, and `{python_extension_name}`.
 
+### Third-party Cargo licenses
+
+Configure the `licenses` table to collect dependency license texts with
+[cargo-bundle-licenses](https://github.com/sstadick/cargo-bundle-licenses).
+Install the collector before building; hatch-rs does not install Cargo tools:
+
+```sh
+cargo install cargo-bundle-licenses --version 4.2.0 --locked
+```
+
+```toml
+[tool.hatch.build.hooks.hatch-rs]
+module = "project"
+path = "rust"
+target-dir = "isolated"
+
+[tool.hatch.build.hooks.hatch-rs.licenses]
+destination = "{module}/licenses/{name}.json"
+```
+
+The empty `licenses` table also enables collection with this destination.
+Without the table, builds do not run the collector. Each compiled artifact gets
+a JSON bundle containing dependency names, versions, license identifiers, and
+original license texts. `{name}` uses the artifact name, or `cargo` for the
+implicit Python extension artifact. Give multiple artifacts distinct destinations.
+Generated-file and skipped artifacts do not run the collector.
+
+The hook runs the collector in the Cargo manifest directory and passes the
+artifact's enabled features and environment. For `all-features` builds, it reads
+the feature names from Cargo metadata. With licenses enabled, dependency-selection
+options such as `--features` and `--package` must use the structured hook or
+artifact fields rather than `cargo-args`. Bundles are copied into the Python package
+before temporary build directories are cleaned up, then forced into the wheel.
+They are also recorded when `artifact-manifest = true`. These package files do
+not add Python `License-File` metadata entries.
+
+Missing tools, failed collector commands, invalid output, or missing license
+texts fail the build. A reviewed JSON bundle can supply texts the collector could
+not find:
+
+```toml
+[tool.hatch.build.hooks.hatch-rs.licenses]
+previous = "third-party.json"
+check-previous = true
+```
+
+`previous` is relative to the hook's `path`, unless absolute. `check-previous`
+also requires the newly collected bundle to be a subset of the reviewed bundle;
+omit it to reuse reviewed texts without checking for dependency changes. Include
+the reviewed bundle and Rust sources in the sdist when building wheels from it.
+Collection itself runs only for wheels, including editable wheels.
+
+The hook resolves each selected Cargo package through metadata and runs the
+collector in that package's directory, so licenses of linked workspace members
+are included. A virtual workspace manifest requires an artifact `package`
+selector.
+
+The collector's scope is conservative: version 4.2.0 always enables default
+features, cannot filter by target, and collects normal dependencies rather than
+build-only or dev-only dependencies. A bundle can include more crates than the
+artifact uses. The collector does not accept
+Cargo's `--locked` or `--frozen` flags, so prepare the dependency cache and review
+the resulting lockfile when reproducibility matters. Vendored native code,
+additional notice files, and libraries added during wheel repair need separate
+review. Collection does not establish license compliance.
+
 ### Using the Rust debug profile for editable installs
 
 By default rust release profile is used to compile the artifacts and it can

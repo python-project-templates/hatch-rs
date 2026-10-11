@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: make develop
 
+      - name: Install Cargo license collector
+        run: cargo install cargo-bundle-licenses --version 4.2.0 --locked
+
       - name: Lint
         run: make lint
 

@@ -5,7 +5,7 @@ import sysconfig
 from ctypes import CDLL
 from dataclasses import dataclass
 from glob import glob
-from json import dumps
+from json import dumps, loads
 from os import environ
 from pathlib import Path
 from platform import machine as platform_machine
@@ -18,10 +18,11 @@ from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 from packaging.tags import cpython_tags, mac_platforms, platform_tags
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 __all__ = (
     "CargoInvocation",
+    "CargoLicenseConfig",
     "CopiedArtifact",
     "GeneratedOutputConfig",
     "HatchRustBuildConfig",
@@ -459,6 +460,24 @@ def _profile_output_dir(profile: str) -> str:
     return profile
 
 
+class CargoLicenseConfig(BaseModel):
+    """Opt-in cargo-bundle-licenses collection for compiled Rust artifacts."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    destination: str = Field(default="{module}/licenses/{name}.json", description="Wheel-relative destination template for each license bundle.")
+    previous: Path | None = Field(default=None, description="Reviewed JSON bundle used to fill missing license text, relative to the hook path.")
+    check_previous: bool = Field(
+        default=False, alias="check-previous", description="Require the generated bundle to be a subset of the reviewed bundle."
+    )
+
+    @model_validator(mode="after")
+    def validate_previous(self) -> CargoLicenseConfig:
+        if self.check_previous and self.previous is None:
+            raise ValueError("licenses.check-previous requires licenses.previous.")
+        return self
+
+
 class GeneratedOutputConfig(BaseModel):
     """A generated file output and how it should be included in the wheel."""
 
@@ -702,6 +721,7 @@ class HatchRustBuildConfig(BaseModel):
     target_dir: str | None = Field(default=None, alias="target-dir", description="Cargo target directory mode or explicit path.")
     env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for Cargo.")
     artifacts: list[RustArtifactConfig] = Field(default_factory=list, description="Explicit Rust artifacts to build and package.")
+    licenses: CargoLicenseConfig | None = Field(default=None, description="Collect and package Cargo dependency license texts when configured.")
     artifact_manifest: bool = Field(
         default=False,
         alias="artifact-manifest",
@@ -936,7 +956,16 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             build_command.append("--locked")
         if self._artifact_bool(artifact.frozen, self.frozen):
             build_command.append("--frozen")
-        build_command.extend(self._artifact_cargo_args(artifact))
+        cargo_args = self._artifact_cargo_args(artifact)
+        if self.licenses is not None:
+            selectors = {"--features", "--all-features", "--no-default-features", "--package", "--manifest-path", "--target", "-F", "-p"}
+            if any(
+                argument.split("=", 1)[0] in selectors
+                or (argument.startswith("-") and not argument.startswith("--") and argument[1:].lstrip("vqrh").startswith(("F", "p")))
+                for argument in cargo_args
+            ):
+                raise ValueError("License collection requires dependency-selection options in cargo-args to use structured artifact fields instead.")
+        build_command.extend(cargo_args)
 
         user_rustc_args = self._artifact_rustc_args(artifact)
         user_crate_types = []
@@ -1702,6 +1731,99 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         self._validate_artifact(planned_artifact, build_root=build_root, copied_artifacts=copied_artifacts)
         return copied_artifacts
 
+    def _license_package(self, planned_artifact: PlannedArtifact, *, manifest: Path, environment: dict[str, str]) -> dict[str, Any]:
+        artifact = planned_artifact.artifact
+        command = ["cargo", "metadata", "--manifest-path", manifest.as_posix(), "--no-deps", "--format-version", "1"]
+        metadata = run(command, cwd=manifest.parent, env=environment, check=False, capture_output=True, text=True)
+        if metadata.returncode != 0:
+            raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' license package discovery failed: {metadata.stderr}")
+        packages = loads(metadata.stdout)["packages"]
+        if artifact.package:
+            command = ["cargo", "pkgid", "--manifest-path", manifest.as_posix(), "--package", artifact.package]
+            package_id = run(command, cwd=manifest.parent, env=environment, check=False, capture_output=True, text=True)
+            if package_id.returncode != 0:
+                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' license package selection failed: {package_id.stderr}")
+            return next(package for package in packages if package["id"] == package_id.stdout.strip())
+        for package in packages:
+            if Path(package["manifest_path"]).resolve() == manifest:
+                return package
+        raise ValueError(f"Artifact '{self._artifact_label(artifact)}' requires a Cargo package selector for workspace license collection.")
+
+    def _collect_licenses(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> None:
+        config = self.licenses
+        artifact = planned_artifact.artifact
+        if config is None or self._is_generated_artifact(artifact):
+            return
+
+        label = self._artifact_label(artifact)
+        manifest = _resolve_path(self._artifact_manifest(artifact) or "Cargo.toml", base=Path(self.path))
+        assert planned_artifact.invocation is not None
+        environment = planned_artifact.invocation.env
+        package = self._license_package(planned_artifact, manifest=manifest, environment=environment)
+        manifest = Path(package["manifest_path"])
+        features = self._artifact_features(artifact)
+        if artifact.package:
+            features = [feature if "/" in feature else f"{package['name']}/{feature}" for feature in features]
+        if self._artifact_bool(artifact.all_features, self.all_features):
+            features.extend(f"{package['name']}/{feature}" for feature in package["features"])
+
+        with TemporaryDirectory(prefix="hatch-rs-licenses-") as directory:
+            output = Path(directory) / "cargo.json"
+            template = config.destination.replace("{name}", artifact.name or "cargo")
+            destination = self._format_destination(template, planned_artifact=planned_artifact, source=output)
+            resolved_destination = (build_root / destination).resolve()
+            if not config.destination or not resolved_destination.is_relative_to(build_root) or resolved_destination.is_dir():
+                raise ValueError(f"Artifact '{label}' license destination must be a file within the build root: {config.destination}")
+            manifest_destination = (build_root / self._format_artifact_manifest_destination()).resolve() if self.artifact_manifest else None
+            if resolved_destination == manifest_destination or any(
+                copied.destination.resolve() == resolved_destination for copied in self._copied_artifacts
+            ):
+                raise ValueError(f"Artifact '{label}' license destination conflicts with a packaged artifact: {destination}")
+
+            command = ["cargo-bundle-licenses", "--format", "json", "--output", output.as_posix()]
+            if features:
+                command.extend(("--features", ",".join(sorted(set(features)))))
+            if config.previous is not None:
+                command.extend(("--previous", _resolve_path(config.previous, base=Path(self.path)).as_posix()))
+            if config.check_previous:
+                command.append("--check-previous")
+            try:
+                completed = run(command, cwd=manifest.parent, env=environment, check=False)
+            except FileNotFoundError as error:
+                raise RuntimeError(f"Artifact '{label}' license collection requires cargo-bundle-licenses. Install it before building.") from error
+            if completed.returncode != 0:
+                raise RuntimeError(f"Artifact '{label}' license collection failed with exit code {completed.returncode}: {shell_join(command)}")
+
+            try:
+                bundle = loads(output.read_text(encoding="utf-8"))
+                libraries = bundle["third_party_libraries"]
+                if not isinstance(bundle["root_name"], str) or not isinstance(libraries, list):
+                    raise TypeError("Expected a root_name string and a third_party_libraries list.")
+                for library in libraries:
+                    texts = library["licenses"]
+                    if not texts or any(not license["text"].strip() or license["text"].strip() == "NOT FOUND" for license in texts):
+                        raise RuntimeError(
+                            f"Dependency '{library['package_name']}' is missing license text. Supply a reviewed licenses.previous bundle."
+                        )
+                if config.check_previous:
+                    assert config.previous is not None
+                    previous = loads(_resolve_path(config.previous, base=Path(self.path)).read_text(encoding="utf-8"))
+
+                    def entries(value: dict[str, Any]) -> set[tuple[str, ...]]:
+                        return {
+                            (library["package_name"], library["package_version"], library["license"], license["license"], license["text"])
+                            for library in value["third_party_libraries"]
+                            for license in library["licenses"]
+                        }
+
+                    if bundle["root_name"] != previous["root_name"] or not entries(bundle).issubset(entries(previous)):
+                        raise RuntimeError(
+                            f"Artifact '{label}' license bundle contains changes not present in the reviewed licenses.previous bundle."
+                        )
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                raise RuntimeError(f"Artifact '{label}' license collector did not produce a valid JSON license bundle: {error}") from error
+            self._copy_artifact(output, destination, build_root=build_root, planned_artifact=planned_artifact, role="third-party-licenses")
+
     def execute(self):
         """Execute the build commands."""
         build_root = Path.cwd().resolve()
@@ -1737,6 +1859,9 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 if completed.returncode != 0:
                     raise RuntimeError(f"hatch-rs build command failed with exit code {completed.returncode}: {planned_artifact.invocation.display}")
             self._copy_outputs(planned_artifact, build_root=build_root)
+
+        for planned_artifact in artifact_plans:
+            self._collect_licenses(planned_artifact, build_root=build_root)
 
         self._write_artifact_manifest(build_root=build_root)
 
