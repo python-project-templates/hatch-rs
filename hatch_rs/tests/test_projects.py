@@ -3,7 +3,7 @@ from json import loads
 from os import environ, listdir, pathsep
 from os.path import dirname
 from pathlib import Path
-from shutil import rmtree
+from shutil import copyfile, rmtree, which
 from subprocess import PIPE, STDOUT, check_call, run
 from sys import executable, modules, path, platform, version_info
 from zipfile import ZipFile
@@ -26,6 +26,59 @@ def _subprocess_env():
 
 
 class TestProject:
+    @pytest.mark.skipif(which("cargo-bundle-licenses") is None, reason="cargo-bundle-licenses CLI is not installed")
+    @pytest.mark.parametrize("workspace", [False, True])
+    def test_cargo_licenses_in_wheel_built_from_sdist(self, tmp_path, workspace):
+        package = tmp_path / "license_project"
+        package.mkdir()
+        (package / "__init__.py").write_text("")
+        rust = tmp_path / "rust"
+        crate = rust / "app" if workspace else rust
+        (crate / "src").mkdir(parents=True)
+        (crate / "src/lib.rs").write_text('#[no_mangle]\npub extern "C" fn answer() -> u32 { licensed_dependency::answer() }\n')
+        deps = "../deps" if workspace else "deps"
+        (crate / "Cargo.toml").write_text(
+            '[package]\nname = "license_project"\nversion = "0.1.0"\nedition = "2021"\n'
+            '[lib]\ncrate-type = ["cdylib"]\n'
+            f'[dependencies]\nlicensed-dependency = {{ path = "{deps}/licensed-dependency" }}\n'
+            f'extra-dependency = {{ path = "{deps}/extra-dependency", optional = true }}\n'
+            '[features]\nextra = ["dep:extra-dependency"]\n'
+        )
+        if workspace:
+            (rust / "Cargo.toml").write_text('[workspace]\nmembers = ["app", "deps/*"]\nresolver = "2"\n')
+        for name in ("licensed-dependency", "extra-dependency"):
+            dependency = rust / "deps" / name
+            (dependency / "src").mkdir(parents=True)
+            (dependency / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "1.0.0"\nedition = "2021"\nlicense = "Apache-2.0"\n')
+            (dependency / "src/lib.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+            copyfile(REPO_ROOT / "LICENSE", dependency / "LICENSE")
+        (tmp_path / "pyproject.toml").write_text(
+            '[build-system]\nrequires = ["hatchling", "hatch-rs"]\nbuild-backend = "hatchling.build"\n'
+            '[project]\nname = "license-project"\nversion = "0.1.0"\n'
+            '[tool.hatch.build.targets.wheel]\npackages = ["license_project"]\n'
+            '[tool.hatch.build.targets.sdist]\ninclude = ["license_project", "rust", "pyproject.toml"]\n'
+            '[tool.hatch.build.hooks.hatch-rs]\nmodule = "license_project"\npath = "rust"\n'
+            'target-dir = "isolated"\nall-features = true\nartifact-manifest = true\n'
+            "[tool.hatch.build.hooks.hatch-rs.licenses]\n"
+        )
+        if workspace:
+            with (tmp_path / "pyproject.toml").open("a") as config:
+                config.write(
+                    '[[tool.hatch.build.hooks.hatch-rs.artifacts]]\nname = "license_project"\npackage = "license_project"\n'
+                    'destination = "license_project/{python_extension_name}"\n'
+                )
+
+        check_call([executable, "-m", "build", "-n"], cwd=tmp_path, env=_subprocess_env())
+
+        bundle_name = "license_project" if workspace else "cargo"
+        with ZipFile(next((tmp_path / "dist").glob("*.whl"))) as wheel:
+            bundle = loads(wheel.read(f"license_project/licenses/{bundle_name}.json"))
+            manifest = loads(wheel.read("license_project/lib/hatch-rs-artifacts.json"))
+        assert {library["package_name"] for library in bundle["third_party_libraries"]} == {"licensed-dependency", "extra-dependency"}
+        for library in bundle["third_party_libraries"]:
+            assert library["licenses"][0]["text"] == (REPO_ROOT / "LICENSE").read_text()
+        assert any(record["role"] == "third-party-licenses" for record in manifest["artifacts"])
+
     @pytest.mark.parametrize(
         "project_folder",
         [
