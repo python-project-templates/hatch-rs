@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-rs-test-project-c-abi-header-symbols"
+description = "Header symbol validation test project for hatch-rs"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "hatchling>=1.20",
+    "hatch-rs",
+]
+
+[tool.hatch.build]
+artifacts = [
+    "header_symbols_project/lib/*.dll",
+    "header_symbols_project/lib/*.dylib",
+    "header_symbols_project/lib/*.so",
+]
+
+[tool.hatch.build.sources]
+src = "/"
+
+[tool.hatch.build.targets.sdist]
+packages = ["header_symbols_project"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["header_symbols_project"]
+
+[tool.hatch.build.hooks.hatch-rs]
+verbose = true
+path = "."
+module = "header_symbols_project"
+target-dir = "isolated"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "header_symbols"
+manifest = "Cargo.toml"
+destination = "header_symbols_project/lib/{shared_library}"
+expected-headers = ["header_symbols_project/include/header_symbols.h"]
+header-symbol-prefix = "header_symbols_"

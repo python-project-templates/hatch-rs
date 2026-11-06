@@ -363,6 +363,36 @@ class TestProject:
         assert completed.returncode != 0
         assert "validation_failure_missing_symbol" in completed.stdout
 
+    def test_c_abi_header_symbol_validation_failure(self):
+        project_folder = "test_project_c_abi_header_symbols"
+        project_root = Path("hatch_rs/tests") / project_folder
+        package_dir = project_root / "header_symbols_project"
+
+        # cleanup
+        rmtree(project_root / "dist", ignore_errors=True)
+        rmtree(project_root / "target", ignore_errors=True)
+        rmtree(package_dir / "lib", ignore_errors=True)
+
+        completed = run(
+            [
+                executable,
+                "-m",
+                "hatchling",
+                "build",
+                "--hooks-only",
+            ],
+            cwd=project_root,
+            env=_subprocess_env(),
+            stderr=STDOUT,
+            stdout=PIPE,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode != 0
+        assert "header_symbols_missing" in completed.stdout
+        assert "header_symbols_check" not in completed.stdout
+
     def test_editable_debug(self):
         project_folder = "test_project_editable_debug"
         # cleanup

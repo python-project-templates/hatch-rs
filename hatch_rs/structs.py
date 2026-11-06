@@ -9,7 +9,7 @@ from json import dumps, loads
 from os import environ
 from pathlib import Path
 from platform import machine as platform_machine
-from re import sub
+from re import DOTALL, MULTILINE, escape, findall, sub
 from shlex import join as shell_join
 from shutil import copy2
 from subprocess import run
@@ -31,6 +31,7 @@ __all__ = (
     "RustArtifactConfig",
     "ValidationCommandConfig",
     "executable_name",
+    "header_symbols",
     "python_extension_name",
     "resolve_target_triple",
     "shared_library_name",
@@ -431,6 +432,23 @@ def _cargo_artifact_stem(path: Path) -> str:
     return stem
 
 
+def header_symbols(text: str, prefix: str) -> list[str]:
+    """Functions declared in a C header whose names start with `prefix`.
+
+    Comments, preprocessor lines and `static inline` definitions are skipped,
+    since none of them is exported by the library. Declarations are found with
+    regular expressions rather than a C parser, which works for a hand-written
+    or generated ABI header.
+    """
+    text = sub(r"/\*.*?\*/", " ", text, flags=DOTALL)
+    text = sub(r"//[^\n]*", " ", text)
+    text = sub(r"^\s*#.*?(?<!\\)$", " ", text, flags=MULTILINE | DOTALL)
+    text = sub(r"\bstatic\s+inline\b[^;{]*\{", "static inline {", text)
+    declared = findall(rf"\b({escape(prefix)}\w*)\s*\(", text)
+    inline = set(findall(rf"\bstatic\s+(?:inline\s+)?[^;{{(]*?\b({escape(prefix)}\w*)\s*\(", text))
+    return sorted(set(declared) - inline)
+
+
 def _resolve_path(path: Path | str, *, base: Path) -> Path:
     path = Path(path)
     if path.is_absolute():
@@ -583,6 +601,11 @@ class RustArtifactConfig(BaseModel):
     cpp_compat: bool = Field(default=False, alias="cpp-compat", description="Reserved for cbindgen C++ compatibility presets.")
     depfile: Path | None = Field(default=None, description="Reserved depfile path for generated headers.")
     expected_symbols: list[str] = Field(default_factory=list, alias="expected-symbols", description="Exported symbols expected in a copied library.")
+    header_symbol_prefix: str | None = Field(
+        default=None,
+        alias="header-symbol-prefix",
+        description="Expect every function in expected-headers whose name starts with this prefix to be exported.",
+    )
     expected_headers: list[Path] = Field(default_factory=list, alias="expected-headers", description="Header files expected to exist after build.")
     expected_abi_strings: list[str] = Field(
         default_factory=list,
@@ -679,6 +702,12 @@ class RustArtifactConfig(BaseModel):
         if not isinstance(path, Path):
             path = Path(path)
         return path
+
+    @model_validator(mode="after")
+    def validate_header_symbol_prefix(self) -> RustArtifactConfig:
+        if self.header_symbol_prefix is not None and not self.expected_headers:
+            raise ValueError(f"Artifact '{self.name}' must set expected-headers when using header-symbol-prefix.")
+        return self
 
 
 @dataclass(frozen=True)
@@ -1592,9 +1621,22 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected ABI string was not found in headers: {expected}")
         return headers
 
-    def _validate_library_exports(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact]) -> None:
+    def _header_symbols(self, artifact: RustArtifactConfig, headers: list[Path]) -> list[str]:
+        if artifact.header_symbol_prefix is None:
+            return []
+        symbols = sorted(
+            {symbol for header in headers for symbol in header_symbols(header.read_text(errors="replace"), artifact.header_symbol_prefix)}
+        )
+        if not symbols:
+            raise RuntimeError(
+                f"Artifact '{self._artifact_label(artifact)}' expected headers declare no functions starting with '{artifact.header_symbol_prefix}'."
+            )
+        return symbols
+
+    def _validate_library_exports(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact], headers: list[Path]) -> None:
         artifact = planned_artifact.artifact
-        if not artifact.validate_artifact and not artifact.expected_symbols:
+        expected = list(dict.fromkeys([*artifact.expected_symbols, *self._header_symbols(artifact, headers)]))
+        if not artifact.validate_artifact and not expected:
             return
         if not copied_artifacts:
             raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' has no copied library to validate.")
@@ -1607,11 +1649,14 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 f"Artifact '{self._artifact_label(artifact)}' failed validation load check for '{copied_library.distribution_path}': {error}"
             ) from error
 
-        for symbol in artifact.expected_symbols:
+        missing = []
+        for symbol in expected:
             try:
                 getattr(library, symbol)
-            except AttributeError as error:
-                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected symbol was not exported: {symbol}") from error
+            except AttributeError:
+                missing.append(symbol)
+        if missing:
+            raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected symbol was not exported: {', '.join(missing)}")
 
     def _validation_tokens(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact], headers: list[Path]) -> dict[str, str]:
         artifact = planned_artifact.artifact
@@ -1675,7 +1720,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
     def _validate_artifact(self, planned_artifact: PlannedArtifact, *, build_root: Path, copied_artifacts: list[CopiedArtifact]) -> None:
         headers = self._validate_expected_headers(planned_artifact.artifact)
-        self._validate_library_exports(planned_artifact, copied_artifacts)
+        self._validate_library_exports(planned_artifact, copied_artifacts, headers)
         self._run_validation_commands(planned_artifact, build_root=build_root, copied_artifacts=copied_artifacts, headers=headers)
 
     def _format_artifact_manifest_destination(self) -> Path:

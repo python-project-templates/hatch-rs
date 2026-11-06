@@ -183,6 +183,26 @@ include-import-lib = true
 command = ["python", "scripts/validate_abi.py", "{destination}", "{header}"]
 ```
 
+With `expected-symbols`, the build checks only the symbols in that list, so a
+function left out of it is never checked. To check every function a header
+declares, set `header-symbol-prefix` instead. Every function in
+`expected-headers` whose name starts with the prefix must then be exported by
+the copied library. Comments, preprocessor lines, and `static inline`
+definitions are skipped, since the library does not export them:
+
+```toml
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "project_ffi"
+manifest = "rust/Cargo.toml"
+destination = "project/lib/{shared_library}"
+expected-headers = ["project/include/project.h"]
+header-symbol-prefix = "project_ffi_"
+```
+
+hatch-rs finds the declarations with regular expressions rather than a C
+parser, which works for a hand-written or generated ABI header. If a header
+declares functions through macros, list them in `expected-symbols`.
+
 `include-import-lib` only packages an import library on Windows targets, where
 Cargo emits `.dll.lib` or `.dll.a` files for downstream native linkers.
 

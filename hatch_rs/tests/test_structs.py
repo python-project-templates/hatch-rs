@@ -12,6 +12,7 @@ from hatch_rs.structs import (
     HatchRustBuildPlan,
     RustArtifactConfig,
     executable_name,
+    header_symbols,
     python_extension_name,
     resolve_target_triple,
     shared_library_name,
@@ -851,6 +852,87 @@ def test_build_plan_missing_expected_header_string_fails_clearly(tmp_path):
 
     with pytest.raises(RuntimeError, match="PROJECT_ABI_VERSION"):
         plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+
+def test_header_symbols_lists_prefixed_declarations():
+    header = """
+#define PROJECT_ABI_VERSION 1
+#define project_ffi_macro(x) (x)
+/* int project_ffi_commented(void); */
+// int project_ffi_line_commented(void);
+typedef struct project_ffi_handle project_ffi_handle;
+
+int project_ffi_answer(void);
+project_ffi_handle *project_ffi_new(
+    const char *name,
+    int flags);
+void other_library_call(void);
+
+static inline int project_ffi_inline_check(void) {
+    return project_ffi_answer() == 42;
+}
+"""
+    assert header_symbols(header, "project_ffi_") == ["project_ffi_answer", "project_ffi_new"]
+
+
+def _plan_with_header(tmp_path, header_text, **artifact):
+    header = tmp_path / "project" / "include" / "project.h"
+    header.parent.mkdir(parents=True)
+    header.write_text(header_text)
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[{"name": "project_ffi", "expected-headers": ["project/include/project.h"], **artifact}],
+    )
+    plan.generate()
+    source = tmp_path / "target" / "x86_64-unknown-linux-gnu" / "release" / "libproject_ffi.so"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"shared library")
+    return plan
+
+
+class _FakeLibrary:
+    def __init__(self, exported):
+        self._exported = set(exported)
+
+    def __getattr__(self, name):
+        if name in self._exported:
+            return object()
+        raise AttributeError(name)
+
+
+def test_build_plan_expects_every_header_symbol(tmp_path, monkeypatch):
+    monkeypatch.setattr("hatch_rs.structs.CDLL", lambda path: _FakeLibrary({"project_ffi_answer", "project_ffi_free"}))
+    plan = _plan_with_header(
+        tmp_path,
+        "int project_ffi_answer(void);\nvoid project_ffi_free(void *p);\n",
+        **{"header-symbol-prefix": "project_ffi_"},
+    )
+    plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
+
+
+def test_build_plan_missing_header_symbol_fails_clearly(tmp_path, monkeypatch):
+    monkeypatch.setattr("hatch_rs.structs.CDLL", lambda path: _FakeLibrary({"project_ffi_answer"}))
+    plan = _plan_with_header(
+        tmp_path,
+        "int project_ffi_answer(void);\nvoid project_ffi_free(void *p);\n",
+        **{"header-symbol-prefix": "project_ffi_"},
+    )
+    with pytest.raises(RuntimeError, match="project_ffi_free"):
+        plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
+
+
+def test_build_plan_header_without_prefixed_symbols_fails_clearly(tmp_path, monkeypatch):
+    monkeypatch.setattr("hatch_rs.structs.CDLL", lambda path: _FakeLibrary(set()))
+    plan = _plan_with_header(tmp_path, "int other_answer(void);\n", **{"header-symbol-prefix": "project_ffi_"})
+    with pytest.raises(RuntimeError, match="no functions starting with 'project_ffi_'"):
+        plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
+
+
+def test_header_symbol_prefix_requires_headers():
+    with pytest.raises(ValueError, match="expected-headers"):
+        RustArtifactConfig.model_validate({"name": "project_ffi", "header-symbol-prefix": "project_ffi_"})
 
 
 def test_build_plan_copies_windows_import_library(tmp_path):
