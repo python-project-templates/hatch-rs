@@ -1,4 +1,4 @@
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 from .hooks import hatch_register_build_hook
 from .plugin import HatchRustBuildHook
