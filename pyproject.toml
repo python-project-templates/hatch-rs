@@ -48,7 +48,7 @@ develop = [
     "editables",
     "hatchling",
     "mdformat",
-    "mdformat-frontmatter",
+    "mdformat-myst",
     "mdformat-tables>=1",
     "pip",
     "pytest",
