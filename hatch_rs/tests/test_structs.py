@@ -542,7 +542,7 @@ def test_build_plan_generates_explicit_artifacts(tmp_path):
 
     assert plan.generate() == [
         "cargo rustc --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
-        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- -C opt-level=3 --crate-type cdylib",
+        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- -C link-arg=-Wl,-soname,libproject_ffi.so -C opt-level=3 --crate-type cdylib",
     ]
 
     first_target_dir = plan.cargo_invocations[0].env["CARGO_TARGET_DIR"]
@@ -576,7 +576,7 @@ def test_build_plan_skips_artifact_when_skip_if_env_is_truthy(tmp_path, monkeypa
     monkeypatch.delenv("PROJECT_SKIP_SHARED_LIBRARY", raising=False)
     assert plan.generate() == [
         "cargo rustc --manifest-path Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
-        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- --crate-type cdylib",
+        "cargo rustc --manifest-path rust/Cargo.toml --release --target x86_64-unknown-linux-gnu -- -C link-arg=-Wl,-soname,libproject_ffi.so --crate-type cdylib",
     ]
 
     monkeypatch.setenv("PROJECT_SKIP_SHARED_LIBRARY", "1")
@@ -1063,6 +1063,19 @@ def test_build_plan_bundled_library_sets_install_name_on_darwin(tmp_path, monkey
 
     assert "-C link-arg=-Wl,-install_name,@rpath/libproject_ffi.dylib" in library
     assert "-C link-arg=-Wl,-rpath,@loader_path/lib" in extension
+
+
+def test_build_plan_bundled_cdylib_gets_identity_without_consumer(tmp_path, monkeypatch):
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[{"name": "project_ffi", "manifest": "rust/Cargo.toml", "destination": "project/lib/{shared_library}"}],
+    )
+    (library,) = plan.generate()
+
+    assert "-C link-arg=-Wl,-soname,libproject_ffi.so" in library
 
 
 def test_build_plan_bundled_library_links_import_library_on_windows(tmp_path, monkeypatch):

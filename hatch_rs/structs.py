@@ -1254,7 +1254,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         mode = self._resolved_library_source
         platform = resolved_target.platform
         args = []
-        if artifact.name in self._linked_names and mode == "bundled":
+        if artifact.name and mode == "bundled" and self._artifact_role(artifact) == "cdylib":
             shared_library = shared_library_name(artifact.name, platform=platform)
             if platform == "darwin":
                 args.extend(("-C", f"link-arg=-Wl,-install_name,@rpath/{shared_library}"))

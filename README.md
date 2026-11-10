@@ -241,7 +241,8 @@ Every Cargo invocation sees `HATCH_RS_LIBRARY_SOURCE`. An artifact with
 
 In `bundled` mode hatch-rs builds the library first, gives it a layout-neutral
 identity (`-soname libfoo.so` on Linux, `@rpath/libfoo.dylib` as the install
-name on macOS), copies it to its destination, and links the extension with
+name on macOS; every `cdylib` artifact gets this, linked or not), copies it to
+its destination, and links the extension with
 `-L`/`-l dylib` plus an rpath relative to the extension (`$ORIGIN/lib` or
 `@loader_path/lib` for the layout above). On Windows the import library is
 packaged next to the DLL, and the package must call
