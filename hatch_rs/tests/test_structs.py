@@ -1154,3 +1154,14 @@ def test_build_plan_links_must_name_an_earlier_artifact(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="declared before it"):
         plan.generate()
+
+
+def test_import_library_must_name_the_shipped_dll(tmp_path):
+    plan = _linked_plan(tmp_path, "x86_64-pc-windows-msvc")
+    artifact = plan.artifacts[0]
+    import_library = tmp_path / "project_ffi.dll.lib"
+    import_library.write_bytes(b"!<arch>\nproject_ffi-8f3e2d7b9a6ad6b1.dll\x00")
+    with pytest.raises(RuntimeError, match="crate-type"):
+        plan._check_import_library_dll_name(import_library, artifact, shared_library="project_ffi.dll")
+    import_library.write_bytes(b"!<arch>\nproject_ffi.dll\x00")
+    plan._check_import_library_dll_name(import_library, artifact, shared_library="project_ffi.dll")

@@ -7,7 +7,7 @@ publish = false
 [lib]
 name = "c_abi_library"
 path = "src/lib.rs"
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 panic = "abort"

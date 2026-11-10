@@ -247,7 +247,11 @@ its destination, and links the extension with
 `@loader_path/lib` for the layout above). On Windows the import library is
 packaged next to the DLL, and the package must call
 `os.add_dll_directory()` on its `lib/` directory before importing the
-extension. Wheel repair tools must keep the bundled library rather than
+extension. The library crate's own `Cargo.toml` must declare
+`crate-type = ["cdylib"]` (an `rlib` crate built with `--crate-type cdylib`
+keeps Cargo's metadata hash in the DLL name, which the import library then
+records); hatch-rs fails the build when the import library names a different
+DLL. Wheel repair tools must keep the bundled library rather than
 vendoring a second copy: `auditwheel repair --exclude 'libfoo.so*'`,
 `delocate-wheel --exclude libfoo`, `delvewheel repair --no-mangle foo.dll`.
 

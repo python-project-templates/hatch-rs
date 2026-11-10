@@ -1626,6 +1626,21 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             return (Path(artifact.destination).parent / "{import_library}").as_posix()
         return f"{self.module}/lib/{{import_library}}"
 
+    def _check_import_library_dll_name(self, import_library: Path, artifact: RustArtifactConfig, *, shared_library: str) -> None:
+        """An import library records the DLL name it was linked with.
+
+        Cargo adds a metadata hash to the deps filename unless the crate's own
+        Cargo.toml declares `cdylib`, so a `--crate-type cdylib` override on an
+        rlib crate yields an import library for `name-<hash>.dll`, which the
+        wheel never ships.
+        """
+        if shared_library.encode() in import_library.read_bytes():
+            return
+        raise RuntimeError(
+            f"Artifact '{self._artifact_label(artifact)}' import library '{import_library.name}' does not reference '{shared_library}'. "
+            'Declare crate-type = ["cdylib"] in the library\'s Cargo.toml so Cargo names the DLL without a metadata hash.'
+        )
+
     def _copy_import_library(
         self,
         planned_artifact: PlannedArtifact,
@@ -1640,6 +1655,8 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             return None
 
         source, import_library = self._find_import_library(target_path, artifact, shared_library=shared_library)
+        if linked:
+            self._check_import_library_dll_name(source, artifact, shared_library=shared_library)
         template = self._default_import_library_destination(artifact)
         distribution_path = self._format_destination(
             template,
