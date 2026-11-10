@@ -5,7 +5,7 @@ from ctypes import CDLL, c_int
 from pathlib import Path
 from sys import platform
 
-_PACKAGE_DIR = Path(__file__).parent
+_PACKAGE_DIR = Path(__file__).resolve().parent
 _LIBRARY_DIR = _PACKAGE_DIR / "lib"
 _EXTENSION_SUFFIX = ".pyd" if platform == "win32" else ".so"
 _SHARED_LIBRARY_NAME = "c_abi_library.dll" if platform == "win32" else "libc_abi_library.dylib" if platform == "darwin" else "libc_abi_library.so"

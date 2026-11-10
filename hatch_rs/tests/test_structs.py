@@ -1052,9 +1052,10 @@ def test_build_plan_bundled_library_links_with_rpath_on_linux(tmp_path, monkeypa
 
     assert "-C link-arg=-Wl,-soname,libproject_ffi.so" in library
     assert "--features capi --no-default-features" in extension
-    assert f"-L native={tmp_path.resolve() / 'project' / 'lib'}" in extension
-    assert "-l dylib=project_ffi" in extension
-    assert "-C 'link-arg=-Wl,-rpath,$ORIGIN/lib'" in extension
+    args = plan._artifact_plans[1].invocation.args
+    assert f"native={tmp_path.resolve() / 'project' / 'lib'}" in args
+    assert "dylib=project_ffi" in args
+    assert "link-arg=-Wl,-rpath,$ORIGIN/lib" in args
     env = plan._artifact_plans[1].invocation.env
     assert env["HATCH_RS_LIBRARY_SOURCE"] == "bundled"
     assert env["HATCH_RS_LIBRARY_PROJECT_FFI_DIR"] == str(tmp_path.resolve() / "project" / "lib")
@@ -1117,8 +1118,9 @@ def test_build_plan_external_mode_resolves_library_root(tmp_path, monkeypatch):
     external = plan._artifact_plans[0].external_library
     assert external.library == prefix / "lib" / "libproject_ffi.so.0"
     assert plan._artifact_plans[0].invocation is None
-    assert f"-L native={prefix / 'lib'}" in extension
-    assert "-l dylib=project_ffi" in extension
+    args = plan._artifact_plans[1].invocation.args
+    assert f"native={prefix / 'lib'}" in args
+    assert "dylib=project_ffi" in args
     assert "rpath" not in extension
     env = plan._artifact_plans[1].invocation.env
     assert env["HATCH_RS_LIBRARY_PROJECT_FFI_DIR"] == str(prefix / "lib")
