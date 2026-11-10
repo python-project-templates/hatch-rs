@@ -3,7 +3,7 @@ from json import loads
 from os import environ, listdir, pathsep
 from os.path import dirname
 from pathlib import Path
-from shutil import rmtree, which
+from shutil import copy2, rmtree, which
 from subprocess import PIPE, STDOUT, check_call, run
 from sys import executable, modules, path, platform, version_info
 from zipfile import ZipFile
@@ -11,8 +11,32 @@ from zipfile import ZipFile
 import pytest
 
 from hatch_rs.structs import resolve_target_triple, shared_library_name
+from hatch_rs.symbols import exported_symbols
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+C_ABI_PROJECT = Path("hatch_rs/tests") / "test_project_python_extension_c_abi_library"
+C_ABI_PACKAGE = C_ABI_PROJECT / "c_abi_bundle_project"
+
+
+def _clean_c_abi_project():
+    rmtree(C_ABI_PROJECT / "dist", ignore_errors=True)
+    rmtree(C_ABI_PROJECT / "target", ignore_errors=True)
+    rmtree(C_ABI_PROJECT / "rust" / "target", ignore_errors=True)
+    rmtree(C_ABI_PACKAGE / "lib", ignore_errors=True)
+    rmtree(C_ABI_PACKAGE / "include", ignore_errors=True)
+    for artifact in C_ABI_PACKAGE.glob("c_abi_bundle_extension*"):
+        if artifact.suffix in (".dll", ".dylib", ".pyd", ".so"):
+            artifact.unlink()
+
+
+def _assert_c_abi_answers(env, *, dll_dir=None, shared=True):
+    """Import the fixture package in a fresh interpreter and call through the linked library."""
+    code = f"import os; os.add_dll_directory({str(dll_dir)!r})\n" if dll_dir else ""
+    code += "import c_abi_bundle_project as m\n"
+    code += "assert m.extension_answer() == 42\nassert m.library_answer() == 7\n"
+    if shared:
+        code += "assert m.shared_answer() == 7\n"
+    check_call([executable, "-c", code], cwd=C_ABI_PROJECT, env=env)
 
 
 def _subprocess_env():
@@ -204,19 +228,9 @@ class TestProject:
         assert cargo_controls_project.feature_enabled()
 
     def test_python_extension_and_c_abi_shared_library_artifacts(self):
-        project_folder = "test_project_python_extension_c_abi_library"
-        project_root = Path("hatch_rs/tests") / project_folder
-        package_dir = project_root / "c_abi_bundle_project"
-
-        # cleanup
-        rmtree(project_root / "dist", ignore_errors=True)
-        rmtree(project_root / "target", ignore_errors=True)
-        rmtree(project_root / "rust" / "target", ignore_errors=True)
-        rmtree(package_dir / "lib", ignore_errors=True)
-        for artifact in package_dir.glob("c_abi_bundle_extension*"):
-            if artifact.suffix in (".dll", ".dylib", ".pyd", ".so"):
-                artifact.unlink()
-        modules.pop("c_abi_bundle_project", None)
+        project_root = C_ABI_PROJECT
+        package_dir = C_ABI_PACKAGE
+        _clean_c_abi_project()
 
         # compile
         check_call(
@@ -236,7 +250,7 @@ class TestProject:
         manifest_path = package_dir / "lib" / "hatch-rs-artifacts.json"
         assert (package_dir / extension_name).exists()
         assert (package_dir / "lib" / shared_library).exists()
-        assert (package_dir / "include" / "c_abi_library.h").exists()
+        assert "#define C_ABI_LIBRARY_ABI_VERSION 1" in (package_dir / "include" / "c_abi_library.h").read_text()
         assert manifest_path.exists()
         assert not (project_root / "target").exists()
         assert not (project_root / "rust" / "target").exists()
@@ -270,13 +284,69 @@ class TestProject:
         if platform == "win32":
             assert any(record["role"] == "import-library" for record in c_abi_records)
 
-        # import
-        here = Path(__file__).parent / project_folder
-        path.insert(0, str(here))
-        c_abi_bundle_project = import_module("c_abi_bundle_project")
+        # the extension reaches the library through its rpath, not by compiling it in
+        assert "c_abi_library_answer" not in exported_symbols(package_dir / extension_name)
+        _assert_c_abi_answers(_subprocess_env())
 
-        assert c_abi_bundle_project.extension_answer() == 42
-        assert c_abi_bundle_project.shared_answer() == 7
+    def test_python_extension_links_external_c_abi_library(self, tmp_path):
+        _clean_c_abi_project()
+        shared_library = shared_library_name("c_abi_library")
+
+        # build the library into its own prefix, the way a conda package would ship it
+        prefix = tmp_path / "prefix"
+        (prefix / "lib").mkdir(parents=True)
+        (prefix / "bin").mkdir()
+        rustc_args = ["--", "-C", "link-arg=-Wl,-install_name,@rpath/libc_abi_library.dylib"] if platform == "darwin" else []
+        check_call(
+            [
+                "cargo",
+                "rustc",
+                "--manifest-path",
+                "rust/Cargo.toml",
+                "--release",
+                "--target-dir",
+                str(tmp_path / "target"),
+                "--crate-type",
+                "cdylib",
+                *rustc_args,
+            ],
+            cwd=C_ABI_PROJECT,
+            env=_subprocess_env(),
+        )
+        built = tmp_path / "target" / "release"
+        if platform == "win32":
+            copy2(built / shared_library, prefix / "bin" / shared_library)
+            copy2(built / "c_abi_library.dll.lib", prefix / "lib" / "c_abi_library.lib")
+        else:
+            copy2(built / shared_library, prefix / "lib" / shared_library)
+
+        env = _subprocess_env()
+        env.update({"HATCH_RS_LIBRARY_SOURCE": "external", "HATCH_RS_LIBRARY_ROOT": str(prefix)})
+        check_call([executable, "-m", "hatchling", "build", "--hooks-only"], cwd=C_ABI_PROJECT, env=env)
+
+        assert not (C_ABI_PACKAGE / "lib" / shared_library).exists()
+        records = loads((C_ABI_PACKAGE / "lib" / "hatch-rs-artifacts.json").read_text())["artifacts"]
+        external = [record for record in records if record["name"] == "c_abi_library"]
+        assert [record["role"] for record in external] == ["external-library"]
+        assert Path(external[0]["source"]).is_relative_to(prefix)
+
+        # import with the prefix on the loader path, as an environment would provide it
+        if platform == "win32":
+            _assert_c_abi_answers(env, dll_dir=prefix / "bin", shared=False)
+        else:
+            env["DYLD_LIBRARY_PATH" if platform == "darwin" else "LD_LIBRARY_PATH"] = str(prefix / "lib")
+            _assert_c_abi_answers(env, shared=False)
+
+    def test_python_extension_compiles_c_abi_library_in_direct_mode(self):
+        _clean_c_abi_project()
+        env = _subprocess_env()
+        env["HATCH_RS_LIBRARY_SOURCE"] = "direct"
+        check_call([executable, "-m", "hatchling", "build", "--hooks-only"], cwd=C_ABI_PROJECT, env=env)
+
+        extension_name = "c_abi_bundle_extension.pyd" if platform == "win32" else "c_abi_bundle_extension.so"
+        assert not (C_ABI_PACKAGE / "lib" / shared_library_name("c_abi_library")).exists()
+        assert "c_abi_library_answer" in exported_symbols(C_ABI_PACKAGE / extension_name)
+        _assert_c_abi_answers(env, shared=False)
 
     def test_generated_file_and_header_artifacts(self):
         project_folder = "test_project_generated_files"
@@ -333,6 +403,43 @@ class TestProject:
         generated_files_project = import_module("generated_files_project")
 
         assert generated_files_project.generated_text() == "generated package data"
+
+    def test_cbindgen_build_script_header(self):
+        project_folder = "test_project_cbindgen_build_script"
+        project_root = Path("hatch_rs/tests") / project_folder
+        package_dir = project_root / "build_script_project"
+
+        # cleanup
+        rmtree(project_root / "dist", ignore_errors=True)
+        rmtree(project_root / "target", ignore_errors=True)
+        rmtree(package_dir / "lib", ignore_errors=True)
+        rmtree(package_dir / "include", ignore_errors=True)
+        modules.pop("build_script_project", None)
+
+        # compile
+        check_call(
+            [
+                executable,
+                "-m",
+                "hatchling",
+                "build",
+                "--hooks-only",
+            ],
+            cwd=project_root,
+            env=_subprocess_env(),
+        )
+
+        header = (package_dir / "include" / "build_script_header.h").read_text()
+        assert "#define BUILD_SCRIPT_HEADER_ABI_VERSION 1" in header
+        assert "build_script_header_answer" in header
+        assert (package_dir / "lib" / shared_library_name("build_script_header")).exists()
+
+        # import
+        here = Path(__file__).parent / project_folder
+        path.insert(0, str(here))
+        build_script_project = import_module("build_script_project")
+
+        assert build_script_project.answer() == 9
 
     def test_c_abi_symbol_validation_failure(self):
         project_folder = "test_project_c_abi_validation_failure"

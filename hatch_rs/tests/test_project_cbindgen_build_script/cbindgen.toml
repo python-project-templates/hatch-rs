@@ -1,0 +1,2 @@
+language = "C"
+include_guard = "BUILD_SCRIPT_HEADER_H"
