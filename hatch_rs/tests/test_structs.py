@@ -892,18 +892,8 @@ def _plan_with_header(tmp_path, header_text, **artifact):
     return plan
 
 
-class _FakeLibrary:
-    def __init__(self, exported):
-        self._exported = set(exported)
-
-    def __getattr__(self, name):
-        if name in self._exported:
-            return object()
-        raise AttributeError(name)
-
-
 def test_build_plan_expects_every_header_symbol(tmp_path, monkeypatch):
-    monkeypatch.setattr("hatch_rs.structs.CDLL", lambda path: _FakeLibrary({"project_ffi_answer", "project_ffi_free"}))
+    monkeypatch.setattr("hatch_rs.structs.exported_symbols", lambda path: {"project_ffi_answer", "project_ffi_free"})
     plan = _plan_with_header(
         tmp_path,
         "int project_ffi_answer(void);\nvoid project_ffi_free(void *p);\n",
@@ -913,7 +903,7 @@ def test_build_plan_expects_every_header_symbol(tmp_path, monkeypatch):
 
 
 def test_build_plan_missing_header_symbol_fails_clearly(tmp_path, monkeypatch):
-    monkeypatch.setattr("hatch_rs.structs.CDLL", lambda path: _FakeLibrary({"project_ffi_answer"}))
+    monkeypatch.setattr("hatch_rs.structs.exported_symbols", lambda path: {"project_ffi_answer"})
     plan = _plan_with_header(
         tmp_path,
         "int project_ffi_answer(void);\nvoid project_ffi_free(void *p);\n",
@@ -924,7 +914,7 @@ def test_build_plan_missing_header_symbol_fails_clearly(tmp_path, monkeypatch):
 
 
 def test_build_plan_header_without_prefixed_symbols_fails_clearly(tmp_path, monkeypatch):
-    monkeypatch.setattr("hatch_rs.structs.CDLL", lambda path: _FakeLibrary(set()))
+    monkeypatch.setattr("hatch_rs.structs.exported_symbols", lambda path: set())
     plan = _plan_with_header(tmp_path, "int other_answer(void);\n", **{"header-symbol-prefix": "project_ffi_"})
     with pytest.raises(RuntimeError, match="no functions starting with 'project_ffi_'"):
         plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
@@ -1030,3 +1020,118 @@ def test_build_plan_writes_artifact_manifest(tmp_path):
         }
     ]
     assert plan.copied_artifacts[-1].distribution_path == "project/lib/hatch-rs-artifacts.json"
+
+
+def _linked_plan(tmp_path, target, **extension):
+    return HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target=target,
+        artifacts=[
+            {"name": "project_ffi", "manifest": "rust/Cargo.toml", "destination": "project/lib/{shared_library}"},
+            {
+                "name": "project_py",
+                "destination": "project/{python_extension_name}",
+                "links": ["project_ffi"],
+                "library-source-features": {"bundled": ["capi"], "external": ["capi"], "direct": ["direct"]},
+                **extension,
+            },
+        ],
+    )
+
+
+def test_build_plan_bundled_library_links_with_rpath_on_linux(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    plan = _linked_plan(tmp_path, "x86_64-unknown-linux-gnu")
+    library, extension = plan.generate()
+
+    assert "-C link-arg=-Wl,-soname,libproject_ffi.so" in library
+    assert "--features capi --no-default-features" in extension
+    assert f"-L native={tmp_path.resolve() / 'project' / 'lib'}" in extension
+    assert "-l dylib=project_ffi" in extension
+    assert "-C 'link-arg=-Wl,-rpath,$ORIGIN/lib'" in extension
+    env = plan._artifact_plans[1].invocation.env
+    assert env["HATCH_RS_LIBRARY_SOURCE"] == "bundled"
+    assert env["HATCH_RS_LIBRARY_PROJECT_FFI_DIR"] == str(tmp_path.resolve() / "project" / "lib")
+
+
+def test_build_plan_bundled_library_sets_install_name_on_darwin(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    library, extension = _linked_plan(tmp_path, "aarch64-apple-darwin").generate()
+
+    assert "-C link-arg=-Wl,-install_name,@rpath/libproject_ffi.dylib" in library
+    assert "-C link-arg=-Wl,-rpath,@loader_path/lib" in extension
+
+
+def test_build_plan_bundled_library_links_import_library_on_windows(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    library, extension = _linked_plan(tmp_path, "x86_64-pc-windows-msvc").generate()
+
+    assert "link-arg" not in library
+    assert "-l dylib=project_ffi.dll" in extension
+    assert "rpath" not in extension
+
+
+def test_build_plan_direct_mode_skips_library(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "direct")
+    plan = _linked_plan(tmp_path, "x86_64-unknown-linux-gnu")
+    (extension,) = plan.generate()
+
+    assert "--features direct --no-default-features" in extension
+    assert "-l dylib" not in extension
+    assert plan._artifact_plans[0].invocation.env["HATCH_RS_LIBRARY_SOURCE"] == "direct"
+
+
+def test_build_plan_external_mode_resolves_library_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "external")
+    prefix = tmp_path / "prefix"
+    (prefix / "lib").mkdir(parents=True)
+    (prefix / "include").mkdir()
+    (prefix / "lib" / "libproject_ffi.so.0").write_bytes(b"")
+    monkeypatch.setenv("HATCH_RS_LIBRARY_ROOT", str(prefix))
+    plan = _linked_plan(tmp_path, "x86_64-unknown-linux-gnu")
+    (extension,) = plan.generate()
+
+    external = plan._artifact_plans[0].external_library
+    assert external.library == prefix / "lib" / "libproject_ffi.so.0"
+    assert plan._artifact_plans[0].invocation is None
+    assert f"-L native={prefix / 'lib'}" in extension
+    assert "-l dylib=project_ffi" in extension
+    assert "rpath" not in extension
+    env = plan._artifact_plans[1].invocation.env
+    assert env["HATCH_RS_LIBRARY_PROJECT_FFI_DIR"] == str(prefix / "lib")
+    assert env["HATCH_RS_LIBRARY_PROJECT_FFI_INCLUDE_DIR"] == str(prefix / "include")
+
+
+def test_build_plan_external_mode_missing_library_fails_clearly(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "external")
+    monkeypatch.setenv("HATCH_RS_LIBRARY_ROOT", str(tmp_path / "prefix"))
+    with pytest.raises(FileNotFoundError, match="libproject_ffi.so"):
+        _linked_plan(tmp_path, "x86_64-unknown-linux-gnu").generate()
+
+
+def test_build_plan_rejects_unknown_library_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "vendored")
+    with pytest.raises(ValueError, match="HATCH_RS_LIBRARY_SOURCE"):
+        _linked_plan(tmp_path, "x86_64-unknown-linux-gnu").generate()
+
+
+def test_build_plan_links_must_name_an_earlier_artifact(tmp_path, monkeypatch):
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[
+            {"name": "project_py", "destination": "project/{python_extension_name}", "links": ["project_ffi"]},
+            {"name": "project_ffi", "manifest": "rust/Cargo.toml"},
+        ],
+    )
+    with pytest.raises(ValueError, match="declared before it"):
+        plan.generate()

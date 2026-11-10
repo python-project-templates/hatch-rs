@@ -155,6 +155,111 @@ destination = "include/project/project.h"
 install-scheme = "shared-data"
 ```
 
+### cbindgen headers
+
+`generator = "cbindgen"` declares a header artifact. hatch-rs runs the
+`cbindgen` executable with the crate, config, language, and first output path,
+so the header does not need to be checked in. `verify = true` passes
+`--verify`, which fails when a checked-in header is stale.
+
+```toml
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "project_ffi_header"
+generator = "cbindgen"
+crate = "rust"
+config = "rust/cbindgen.toml"
+inputs = ["rust/src/lib.rs", "rust/cbindgen.toml"]
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts.outputs]]
+source = "project/include/project.h"
+install-scheme = "validate-only"
+```
+
+When the crate's `build.rs` writes the header through the `cbindgen` library
+instead, no generator artifact is needed. The header exists once the Cargo
+build finishes, so validate it on the library artifact:
+
+```toml
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "project_ffi"
+manifest = "rust/Cargo.toml"
+destination = "project/lib/{shared_library}"
+expected-headers = ["project/include/project.h"]
+header-symbol-prefix = "project_ffi_"
+```
+
+Use `validate-only` when the header already reaches the wheel through
+`tool.hatch.build.artifacts`; use `package` or `shared-data` to have hatch-rs
+place it.
+
+### Linking an extension against a C ABI library
+
+A Python extension can link a `cdylib` artifact instead of compiling the
+library crate into itself, so one copy of the library serves every extension
+in a process. The extension artifact names the library with `links`, and
+`library-source` chooses where that library comes from:
+
+| `library-source` | Library artifact         | Extension links                                   |
+| ---------------- | ------------------------ | ------------------------------------------------- |
+| `bundled`        | built, shipped in `lib/` | the bundled copy, with an rpath to it             |
+| `external`       | not built                | a prebuilt library found outside the project      |
+| `static`         | not built                | nothing; the crate compiles the C ABI in          |
+| `direct`         | not built                | nothing; the crate uses the Rust library directly |
+
+`bundled` is the default and the wheel layout. `HATCH_RS_LIBRARY_SOURCE`
+overrides the configured value, which is how a conda recipe builds the same
+project in `external` mode against its own `libfoo` package.
+
+```toml
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "project_ffi"
+manifest = "rust/Cargo.toml"
+destination = "project/lib/{shared_library}"
+pkg-config = "project"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "project_py"
+destination = "project/{python_extension_name}"
+links = ["project_ffi"]
+
+[tool.hatch.build.hooks.hatch-rs.artifacts.library-source-features]
+bundled = ["capi"]
+external = ["capi"]
+static = ["capi-static"]
+direct = ["direct"]
+```
+
+Cargo cannot switch dependencies from an environment variable, so
+`library-source-features` maps each mode to the Cargo features of the
+extension crate; the selected list is passed with `--no-default-features`.
+Typically one feature depends on a `-sys` crate with `extern "C"`
+declarations and another on the Rust library crate itself.
+
+Every Cargo invocation sees `HATCH_RS_LIBRARY_SOURCE`. An artifact with
+`links` also gets `HATCH_RS_LIBRARY_<NAME>_DIR` and, in external mode,
+`HATCH_RS_LIBRARY_<NAME>_INCLUDE_DIR`, for a `build.rs` that needs them.
+
+In `bundled` mode hatch-rs builds the library first, gives it a layout-neutral
+identity (`-soname libfoo.so` on Linux, `@rpath/libfoo.dylib` as the install
+name on macOS), copies it to its destination, and links the extension with
+`-L`/`-l dylib` plus an rpath relative to the extension (`$ORIGIN/lib` or
+`@loader_path/lib` for the layout above). On Windows the import library is
+packaged next to the DLL, and the package must call
+`os.add_dll_directory()` on its `lib/` directory before importing the
+extension. Wheel repair tools must keep the bundled library rather than
+vendoring a second copy: `auditwheel repair --exclude 'libfoo.so*'`,
+`delocate-wheel --exclude libfoo`, `delvewheel repair --no-mangle foo.dll`.
+
+In `external` mode the library is resolved, in order, from
+`HATCH_RS_LIBRARY_ROOT`, the artifact's `library-root`, its `pkg-config`
+module (`libdir` and `includedir` variables), or `$PREFIX`/`$CONDA_PREFIX`
+(`Library\` on Windows). The library must exist as `lib/libfoo.so`,
+`lib/libfoo.so.N`, `lib/libfoo.dylib`, or `bin/foo.dll` with `lib/foo.lib`.
+No rpath is added; the environment's loader path is expected to find the
+library. Header, symbol, and validation-command checks still run against the
+external file, and the artifact manifest records it with role
+`external-library`.
+
 ### ABI validation and artifact metadata
 
 `cdylib` artifacts can validate the copied C ABI library before the wheel is
@@ -162,6 +267,10 @@ finalized. The hook can check expected exported symbols, verify headers and ABI
 strings/macros, load the copied library with `ctypes.CDLL` when `validate = true`,
 run project validation commands, include Windows import libraries, and emit a
 package-local artifact manifest.
+
+Symbol checks read the export table of the copied ELF, Mach-O, PE, or
+WebAssembly file, so they work for cross-compiled and Pyodide artifacts. Only
+`validate = true` loads the library, which requires a build for the host.
 
 ```toml
 [tool.hatch.build.hooks.hatch-rs]

@@ -43,9 +43,15 @@ target-dir = "isolated"
 artifact-manifest = true
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
-name = "c_abi_bundle_extension"
-manifest = "Cargo.toml"
-destination = "c_abi_bundle_project/{python_extension_name}"
+name = "c_abi_library_header"
+generator = "cbindgen"
+crate = "rust"
+config = "rust/cbindgen.toml"
+inputs = ["rust/src/lib.rs", "rust/cbindgen.toml"]
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts.outputs]]
+source = "c_abi_bundle_project/include/c_abi_library.h"
+install-scheme = "validate-only"
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
 name = "c_abi_library"
@@ -59,3 +65,15 @@ include-import-lib = true
 
 [[tool.hatch.build.hooks.hatch-rs.artifacts.validation-commands]]
 command = ["python", "scripts/validate_c_abi.py", "{destination}", "{header}"]
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "c_abi_bundle_extension"
+manifest = "Cargo.toml"
+destination = "c_abi_bundle_project/{python_extension_name}"
+links = ["c_abi_library"]
+
+[tool.hatch.build.hooks.hatch-rs.artifacts.library-source-features]
+bundled = ["capi"]
+external = ["capi"]
+static = ["direct"]
+direct = ["direct"]

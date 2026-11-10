@@ -9,5 +9,13 @@ name = "c_abi_bundle_extension"
 path = "src/lib.rs"
 crate-type = ["cdylib"]
 
+[dependencies]
+c_abi_library = { path = "rust", optional = true }
+
+[features]
+default = ["direct"]
+capi = []
+direct = ["dep:c_abi_library"]
+
 [profile.release]
 panic = "abort"

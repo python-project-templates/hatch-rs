@@ -49,8 +49,8 @@ jobs:
       - name: Install dependencies
         run: make develop
 
-      - name: Install Cargo license collector
-        run: cargo install cargo-bundle-licenses --version 4.2.0 --locked
+      - name: Install Cargo license collector and cbindgen
+        run: cargo install cargo-bundle-licenses@4.2.0 cbindgen@0.29.4 --locked
 
       - name: Lint
         run: make lint
