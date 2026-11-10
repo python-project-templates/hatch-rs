@@ -871,6 +871,10 @@ void other_library_call(void);
 static inline int project_ffi_inline_check(void) {
     return project_ffi_answer() == 42;
 }
+typedef struct project_ffi_vtable {
+    project_ffi_status (*open)(void *data, const char *path);
+    project_ffi_handle *(*create)(void *data);
+} project_ffi_vtable;
 """
     assert header_symbols(header, "project_ffi_") == ["project_ffi_answer", "project_ffi_new"]
 

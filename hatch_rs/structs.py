@@ -450,8 +450,9 @@ def _cargo_artifact_stem(path: Path) -> str:
 def header_symbols(text: str, prefix: str) -> list[str]:
     """Functions declared in a C header whose names start with `prefix`.
 
-    Comments, preprocessor lines and `static inline` definitions are skipped,
-    since none of them is exported by the library. Declarations are found with
+    Comments, preprocessor lines, `static inline` definitions, and function
+    pointer declarators such as `prefix_status (*open)(...)` are skipped, since
+    none of them is exported by the library. Declarations are found with
     regular expressions rather than a C parser, which works for a hand-written
     or generated ABI header.
     """
@@ -459,8 +460,8 @@ def header_symbols(text: str, prefix: str) -> list[str]:
     text = sub(r"//[^\n]*", " ", text)
     text = sub(r"^\s*#.*?(?<!\\)$", " ", text, flags=MULTILINE | DOTALL)
     text = sub(r"\bstatic\s+inline\b[^;{]*\{", "static inline {", text)
-    declared = findall(rf"\b({escape(prefix)}\w*)\s*\(", text)
-    inline = set(findall(rf"\bstatic\s+(?:inline\s+)?[^;{{(]*?\b({escape(prefix)}\w*)\s*\(", text))
+    declared = findall(rf"\b({escape(prefix)}\w*)\s*\((?!\s*\*)", text)
+    inline = set(findall(rf"\bstatic\s+(?:inline\s+)?[^;{{(]*?\b({escape(prefix)}\w*)\s*\((?!\s*\*)", text))
     return sorted(set(declared) - inline)
 
 

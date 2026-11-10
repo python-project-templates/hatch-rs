@@ -297,8 +297,9 @@ With `expected-symbols`, the build checks only the symbols in that list, so a
 function left out of it is never checked. To check every function a header
 declares, set `header-symbol-prefix` instead. Every function in
 `expected-headers` whose name starts with the prefix must then be exported by
-the copied library. Comments, preprocessor lines, and `static inline`
-definitions are skipped, since the library does not export them:
+the copied library. Comments, preprocessor lines, `static inline`
+definitions, and function pointer fields such as `foo_status (*open)(...)` are
+skipped, since the library does not export them:
 
 ```toml
 [[tool.hatch.build.hooks.hatch-rs.artifacts]]
