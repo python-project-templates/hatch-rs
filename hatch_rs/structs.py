@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import sys
 import sysconfig
-from ctypes import CDLL
 from dataclasses import dataclass
 from glob import glob
-from importlib.util import find_spec
-from json import dumps, loads
+from json import loads
 from logging import getLogger
 from os import environ
 from os.path import relpath
 from pathlib import Path
 from platform import machine as platform_machine
-from re import DOTALL, MULTILINE, escape, findall, sub
+from re import sub
 from shlex import join as shell_join
 from shutil import copy2
 from subprocess import run
@@ -20,10 +18,23 @@ from sys import platform as sys_platform, version_info
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
+from hatch_native import (
+    ExternalLibrary,
+    ExternalLibraryConfig,
+    LibraryValidationConfig,
+    ValidationCommandConfig,
+    check_exports,
+    check_headers,
+    header_symbols,
+    prefixed_header_symbols,
+    resolve_external_library,
+    resolve_library_source,
+    run_validation_command,
+    shared_library_name as _shared_library_name,
+    write_artifact_manifest,
+)
 from packaging.tags import cpython_tags, mac_platforms, platform_tags
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
-
-from .symbols import exported_symbols
 
 _logger = getLogger(__name__)
 
@@ -86,18 +97,6 @@ class CopiedArtifact:
     source: Path
     destination: Path
     distribution_path: str
-
-
-@dataclass(frozen=True)
-class ExternalLibrary:
-    """A prebuilt C ABI library resolved outside the build in external mode."""
-
-    name: str
-    library: Path
-    library_dir: Path
-    include_dir: Path | None
-    link_name: str
-    package: str | None = None
 
 
 WINDOWS_TARGETS = {
@@ -270,16 +269,7 @@ def resolve_target_triple(target: str | None = None, *, platform: str | None = N
 
 def shared_library_name(library: str, *, platform: str | None = None) -> str:
     """Render a platform-specific standalone shared-library filename."""
-    platform = _normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform))
-    if platform == "win32":
-        return f"{library}.dll"
-    if platform == "darwin":
-        return f"lib{library}.dylib"
-    if platform == "linux":
-        return f"lib{library}.so"
-    if platform == "emscripten":
-        return f"{library}.wasm"
-    raise ValueError(f"Unsupported platform: {platform}")
+    return _shared_library_name(library, platform=_normalize_platform(platform or environ.get("HATCH_RUST_PLATFORM", sys_platform)))
 
 
 def executable_name(name: str, *, platform: str | None = None) -> str:
@@ -452,24 +442,6 @@ def _cargo_artifact_stem(path: Path) -> str:
     return stem
 
 
-def header_symbols(text: str, prefix: str) -> list[str]:
-    """Functions declared in a C header whose names start with `prefix`.
-
-    Comments, preprocessor lines, `static inline` definitions, and function
-    pointer declarators such as `prefix_status (*open)(...)` are skipped, since
-    none of them is exported by the library. Declarations are found with
-    regular expressions rather than a C parser, which works for a hand-written
-    or generated ABI header.
-    """
-    text = sub(r"/\*.*?\*/", " ", text, flags=DOTALL)
-    text = sub(r"//[^\n]*", " ", text)
-    text = sub(r"^\s*#.*?(?<!\\)$", " ", text, flags=MULTILINE | DOTALL)
-    text = sub(r"\bstatic\s+inline\b[^;{]*\{", "static inline {", text)
-    declared = findall(rf"\b({escape(prefix)}\w*)\s*\((?!\s*\*)", text)
-    inline = set(findall(rf"\bstatic\s+(?:inline\s+)?[^;{{(]*?\b({escape(prefix)}\w*)\s*\((?!\s*\*)", text))
-    return sorted(set(declared) - inline)
-
-
 def _resolve_path(path: Path | str, *, base: Path) -> Path:
     path = Path(path)
     if path.is_absolute():
@@ -535,33 +507,7 @@ class GeneratedOutputConfig(BaseModel):
         return source
 
 
-class ValidationCommandConfig(BaseModel):
-    """A project-specific command used to validate a built artifact."""
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-
-    command: list[str] = Field(description="Validation command argv list.")
-    working_directory: Path | None = Field(default=None, alias="working-directory", description="Validation command working directory.")
-    env: dict[str, str] = Field(default_factory=dict, description="Additional environment variables for this validation command.")
-
-    @field_validator("command", mode="before")
-    @classmethod
-    def validate_command(cls, values: Any) -> list[str]:
-        if isinstance(values, str):
-            raise TypeError("Validation command must be an argv list, not a shell string.")
-        return [str(value) for value in values]
-
-    @field_validator("working_directory", mode="before")
-    @classmethod
-    def validate_working_directory(cls, path: Path | None) -> Path | None:
-        if path is None:
-            return None
-        if not isinstance(path, Path):
-            path = Path(path)
-        return path
-
-
-class RustArtifactConfig(BaseModel):
+class RustArtifactConfig(LibraryValidationConfig, ExternalLibraryConfig):
     """Configuration for one Rust build artifact."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -618,28 +564,6 @@ class RustArtifactConfig(BaseModel):
     config: Path | None = Field(default=None, description="Generator config path, such as cbindgen.toml.")
     language: str | None = Field(default=None, description="Generator language, such as C, C++, or Cython.")
     verify: bool = Field(default=False, description="Run a generator in verification mode when supported.")
-    expected_symbols: list[str] = Field(default_factory=list, alias="expected-symbols", description="Exported symbols expected in a copied library.")
-    header_symbol_prefix: str | None = Field(
-        default=None,
-        alias="header-symbol-prefix",
-        description="Expect every function in expected-headers whose name starts with this prefix to be exported.",
-    )
-    expected_headers: list[Path] = Field(default_factory=list, alias="expected-headers", description="Header files expected to exist after build.")
-    expected_abi_strings: list[str] = Field(
-        default_factory=list,
-        alias="expected-abi-strings",
-        description="ABI version strings or macros expected in the configured headers.",
-    )
-    validate_artifact: bool = Field(
-        default=False,
-        alias="validate",
-        description="Load the copied library with ctypes.CDLL after copy. Requires a library built for the host.",
-    )
-    validation_commands: list[ValidationCommandConfig] = Field(
-        default_factory=list,
-        alias="validation-commands",
-        description="Project-specific validation commands to run after artifact copy.",
-    )
     include_import_lib: bool = Field(
         default=False,
         alias="include-import-lib",
@@ -650,15 +574,6 @@ class RustArtifactConfig(BaseModel):
         default_factory=dict,
         alias="library-source-features",
         description="Cargo features per library-source value; replaces features and disables default features for that value.",
-    )
-    pkg_config: str | None = Field(default=None, alias="pkg-config", description="pkg-config module locating this library in external mode.")
-    library_root: Path | None = Field(
-        default=None, alias="library-root", description="Prefix with lib/ and include/ for this library in external mode."
-    )
-    python_package: str | None = Field(
-        default=None,
-        alias="python-package",
-        description="Installed Python package shipping this library under lib/ and include/; linked from there instead of built.",
     )
     import_library_destination: str | None = Field(
         default=None,
@@ -702,7 +617,7 @@ class RustArtifactConfig(BaseModel):
             return [values]
         return [str(value) for value in values]
 
-    @field_validator("expected_symbols", "expected_abi_strings", "links", mode="before")
+    @field_validator("links", mode="before")
     @classmethod
     def validate_string_list(cls, values: Any) -> list[str]:
         if values is None:
@@ -711,27 +626,7 @@ class RustArtifactConfig(BaseModel):
             return [values]
         return [str(value) for value in values]
 
-    @field_validator("expected_headers", mode="before")
-    @classmethod
-    def validate_path_list(cls, values: Any) -> list[Path]:
-        if values is None:
-            return []
-        if isinstance(values, (str, Path)):
-            values = [values]
-        return [value if isinstance(value, Path) else Path(value) for value in values]
-
-    @field_validator("validation_commands", mode="before")
-    @classmethod
-    def validate_validation_commands(cls, values: Any) -> list[Any]:
-        if values is None:
-            return []
-        if isinstance(values, dict):
-            return [values]
-        if isinstance(values, list) and values and all(not isinstance(value, dict) for value in values):
-            return [{"command": values}]
-        return list(values)
-
-    @field_validator("working_directory", "config", "library_root", mode="before")
+    @field_validator("working_directory", "config", mode="before")
     @classmethod
     def validate_optional_path(cls, path: Path | None) -> Path | None:
         if path is None:
@@ -739,12 +634,6 @@ class RustArtifactConfig(BaseModel):
         if not isinstance(path, Path):
             path = Path(path)
         return path
-
-    @model_validator(mode="after")
-    def validate_header_symbol_prefix(self) -> RustArtifactConfig:
-        if self.header_symbol_prefix is not None and not self.expected_headers:
-            raise ValueError(f"Artifact '{self.name}' must set expected-headers when using header-symbol-prefix.")
-        return self
 
     @model_validator(mode="after")
     def validate_python_package(self) -> RustArtifactConfig:
@@ -1212,10 +1101,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return self.commands
 
     def _resolve_library_source(self) -> str:
-        value = environ.get("HATCH_RS_LIBRARY_SOURCE") or self.library_source
-        if value not in ("bundled", "external", "static", "direct"):
-            raise ValueError(f"Unsupported HATCH_RS_LIBRARY_SOURCE: {value}")
-        return value
+        return resolve_library_source(self.library_source, env_var="HATCH_RS_LIBRARY_SOURCE")
 
     def _linked_library_names(self, artifacts: list[RustArtifactConfig]) -> set[str]:
         names = set()
@@ -1302,66 +1188,16 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                     args.extend(("-C", f"link-arg=-Wl,-rpath,{origin}/{Path(relative).as_posix()}"))
         return args
 
-    def _pkg_config_variable(self, artifact: RustArtifactConfig, variable: str) -> Path:
-        assert artifact.pkg_config is not None
-        command = ["pkg-config", f"--variable={variable}", artifact.pkg_config]
-        try:
-            completed = run(command, capture_output=True, text=True, check=False)
-        except FileNotFoundError as error:
-            raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' needs pkg-config on PATH to resolve '{artifact.pkg_config}'.") from error
-        if completed.returncode != 0 or not completed.stdout.strip():
-            raise RuntimeError(
-                f"Artifact '{self._artifact_label(artifact)}' pkg-config lookup failed: {shell_join(command)}: {completed.stderr.strip()}"
-            )
-        return Path(completed.stdout.strip())
-
     def _resolve_external_library(self, artifact: RustArtifactConfig, *, platform: str) -> ExternalLibrary:
-        name = self._artifact_name(artifact)
-        label = self._artifact_label(artifact)
         root = environ.get("HATCH_RS_LIBRARY_ROOT") or (str(artifact.library_root) if artifact.library_root is not None else None)
-        package = artifact.python_package if self._resolved_library_source == "bundled" else None
-        if root:
-            prefix = _resolve_path(root, base=Path(self.path))
-            library_dir, include_dir = prefix / "lib", prefix / "include"
-        elif package:
-            spec = find_spec(package)
-            if spec is None or not spec.submodule_search_locations:
-                raise ValueError(f"Artifact '{label}' package '{package}' is not installed in the build environment.")
-            prefix = Path(next(iter(spec.submodule_search_locations)))
-            library_dir, include_dir = prefix / "lib", prefix / "include"
-        elif artifact.pkg_config:
-            library_dir = self._pkg_config_variable(artifact, "libdir")
-            include_dir = self._pkg_config_variable(artifact, "includedir")
-        else:
-            conda_prefix = environ.get("PREFIX") or environ.get("CONDA_PREFIX")
-            if not conda_prefix:
-                raise ValueError(
-                    f"Artifact '{label}' is external but has no library-root, pkg-config, HATCH_RS_LIBRARY_ROOT, PREFIX, or CONDA_PREFIX."
-                )
-            prefix = Path(conda_prefix) / "Library" if platform == "win32" else Path(conda_prefix)
-            library_dir, include_dir = prefix / "lib", prefix / "include"
-
-        shared_library = shared_library_name(name, platform=platform)
-        if platform == "win32":
-            candidates = [library_dir.parent / "bin" / shared_library, library_dir / shared_library]
-            link_name = name if (library_dir / f"{name}.lib").is_file() else f"{name}.dll"
-        elif platform == "darwin":
-            candidates = [library_dir / shared_library, *sorted(library_dir.glob(f"lib{name}.*.dylib"))]
-            link_name = name
-        else:
-            candidates = [library_dir / shared_library, *sorted(library_dir.glob(f"{shared_library}.*"))]
-            link_name = name
-        library = next((candidate for candidate in candidates if candidate.is_file()), None)
-        if library is None:
-            searched = ", ".join(str(candidate.parent) for candidate in candidates[:2])
-            raise FileNotFoundError(f"Artifact '{label}' external library '{shared_library}' was not found under {searched}.")
-        return ExternalLibrary(
-            name=name,
-            library=library,
-            library_dir=library_dir,
-            include_dir=include_dir if include_dir.is_dir() else None,
-            link_name=link_name,
-            package=package,
+        return resolve_external_library(
+            self._artifact_name(artifact),
+            label=self._artifact_label(artifact),
+            platform=platform,
+            root_env_var="HATCH_RS_LIBRARY_ROOT",
+            root=_resolve_path(root, base=Path(self.path)) if root else None,
+            package=artifact.python_package if self._resolved_library_source == "bundled" else None,
+            pkg_config=artifact.pkg_config,
         )
 
     def _plan_external_library(self, artifact: RustArtifactConfig, *, global_target: str | None) -> PlannedArtifact:
@@ -1876,34 +1712,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         return copied_artifacts
 
     def _validate_expected_headers(self, artifact: RustArtifactConfig) -> list[Path]:
-        headers = []
-        for header in artifact.expected_headers:
-            resolved_header = _resolve_path(header, base=Path(self.path))
-            if not resolved_header.exists():
-                raise FileNotFoundError(f"Artifact '{self._artifact_label(artifact)}' expected header does not exist: {header}")
-            if not resolved_header.is_file():
-                raise FileNotFoundError(f"Artifact '{self._artifact_label(artifact)}' expected header is not a file: {header}")
-            headers.append(resolved_header)
-
-        if artifact.expected_abi_strings and not headers:
-            raise ValueError(f"Artifact '{self._artifact_label(artifact)}' must set expected-headers when using expected-abi-strings.")
-
-        for expected in artifact.expected_abi_strings:
-            if not any(expected in header.read_text(errors="replace") for header in headers):
-                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected ABI string was not found in headers: {expected}")
-        return headers
+        return check_headers(artifact.expected_headers, artifact.expected_abi_strings, base=Path(self.path), label=self._artifact_label(artifact))
 
     def _header_symbols(self, artifact: RustArtifactConfig, headers: list[Path]) -> list[str]:
-        if artifact.header_symbol_prefix is None:
-            return []
-        symbols = sorted(
-            {symbol for header in headers for symbol in header_symbols(header.read_text(errors="replace"), artifact.header_symbol_prefix)}
-        )
-        if not symbols:
-            raise RuntimeError(
-                f"Artifact '{self._artifact_label(artifact)}' expected headers declare no functions starting with '{artifact.header_symbol_prefix}'."
-            )
-        return symbols
+        return prefixed_header_symbols(headers, artifact.header_symbol_prefix, label=self._artifact_label(artifact))
 
     def _validate_library_exports(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact], headers: list[Path]) -> None:
         artifact = planned_artifact.artifact
@@ -1914,24 +1726,13 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' has no copied library to validate.")
 
         copied_library = copied_artifacts[0]
-        if expected:
-            try:
-                exported = exported_symbols(copied_library.destination)
-            except (OSError, ValueError) as error:
-                raise RuntimeError(
-                    f"Artifact '{self._artifact_label(artifact)}' could not read exported symbols from '{copied_library.distribution_path}': {error}"
-                ) from error
-            missing = [symbol for symbol in expected if symbol not in exported]
-            if missing:
-                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' expected symbol was not exported: {', '.join(missing)}")
-
-        if artifact.validate_artifact:
-            try:
-                CDLL(str(copied_library.destination))
-            except OSError as error:
-                raise RuntimeError(
-                    f"Artifact '{self._artifact_label(artifact)}' failed validation load check for '{copied_library.distribution_path}': {error}"
-                ) from error
+        check_exports(
+            copied_library.destination,
+            expected=expected,
+            load=artifact.validate_artifact,
+            label=self._artifact_label(artifact),
+            display_path=copied_library.distribution_path,
+        )
 
     def _validation_tokens(self, planned_artifact: PlannedArtifact, copied_artifacts: list[CopiedArtifact], headers: list[Path]) -> dict[str, str]:
         artifact = planned_artifact.artifact
@@ -1983,15 +1784,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                     "HATCH_RS_BUILD_ROOT": str(build_root),
                 }
             )
-            try:
-                completed = run(command, cwd=working_directory, env=environment, check=False)
-            except FileNotFoundError as error:
-                raise RuntimeError(f"Artifact '{self._artifact_label(artifact)}' validation command was not found: {command[0]}") from error
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    f"Artifact '{self._artifact_label(artifact)}' validation command failed with exit code "
-                    f"{completed.returncode}: {shell_join(command)}"
-                )
+            run_validation_command(command, cwd=working_directory, env=environment, label=self._artifact_label(artifact))
 
     def _validate_artifact(self, planned_artifact: PlannedArtifact, *, build_root: Path, copied_artifacts: list[CopiedArtifact]) -> None:
         headers = self._validate_expected_headers(planned_artifact.artifact)
@@ -2022,13 +1815,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
 
         distribution_path = self._format_artifact_manifest_destination()
         destination = build_root / distribution_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": 1,
-            "module": self.module,
-            "artifacts": self._artifact_manifest_records,
-        }
-        destination.write_text(dumps(payload, indent=2, sort_keys=True) + "\n")
+        write_artifact_manifest(destination, module=self.module, records=self._artifact_manifest_records)
         self._copied_artifacts.append(CopiedArtifact(source=destination, destination=destination, distribution_path=distribution_path.as_posix()))
 
     def _copy_outputs(self, planned_artifact: PlannedArtifact, *, build_root: Path) -> list[CopiedArtifact]:
