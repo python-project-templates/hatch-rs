@@ -5,6 +5,7 @@ import sysconfig
 from ctypes import CDLL
 from dataclasses import dataclass
 from glob import glob
+from importlib.util import find_spec
 from json import dumps, loads
 from os import environ
 from os.path import relpath
@@ -93,6 +94,7 @@ class ExternalLibrary:
     library_dir: Path
     include_dir: Path | None
     link_name: str
+    package: str | None = None
 
 
 WINDOWS_TARGETS = {
@@ -650,6 +652,11 @@ class RustArtifactConfig(BaseModel):
     library_root: Path | None = Field(
         default=None, alias="library-root", description="Prefix with lib/ and include/ for this library in external mode."
     )
+    python_package: str | None = Field(
+        default=None,
+        alias="python-package",
+        description="Installed Python package shipping this library under lib/ and include/; linked from there instead of built.",
+    )
     import_library_destination: str | None = Field(
         default=None,
         alias="import-library-destination",
@@ -734,6 +741,12 @@ class RustArtifactConfig(BaseModel):
     def validate_header_symbol_prefix(self) -> RustArtifactConfig:
         if self.header_symbol_prefix is not None and not self.expected_headers:
             raise ValueError(f"Artifact '{self.name}' must set expected-headers when using header-symbol-prefix.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_python_package(self) -> RustArtifactConfig:
+        if self.python_package is not None and (not self.name or self.manifest is not None or self.destination is not None):
+            raise ValueError(f"Artifact '{self.name}' with python-package must set name and no manifest or destination.")
         return self
 
 
@@ -1171,9 +1184,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         self._linked_names = self._linked_library_names(artifacts)
         self._external_libraries = {}
         for artifact in artifacts:
-            if artifact.name in self._linked_names and self._resolved_library_source in ("static", "direct"):
+            library = artifact.python_package is not None or artifact.name in self._linked_names
+            if library and self._resolved_library_source in ("static", "direct"):
                 continue
-            if artifact.name in self._linked_names and self._resolved_library_source == "external":
+            if library and (artifact.python_package is not None or self._resolved_library_source == "external"):
                 planned_artifact = self._plan_external_library(artifact, global_target=global_target)
             elif self._is_generated_artifact(artifact):
                 planned_artifact = self._build_command_artifact_plan(artifact, global_target=global_target)
@@ -1242,13 +1256,13 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         environment = {}
         for link in artifact.links:
             key = sub(r"[^A-Za-z0-9]", "_", link).upper()
-            if self._resolved_library_source == "bundled":
-                environment[f"HATCH_RS_LIBRARY_{key}_DIR"] = str(self._bundled_library_dir(link, resolved_target))
-            elif self._resolved_library_source == "external":
-                external = self._external_libraries[link]
+            external = self._external_libraries.get(link)
+            if external is not None:
                 environment[f"HATCH_RS_LIBRARY_{key}_DIR"] = str(external.library_dir)
                 if external.include_dir is not None:
                     environment[f"HATCH_RS_LIBRARY_{key}_INCLUDE_DIR"] = str(external.include_dir)
+            elif self._resolved_library_source == "bundled":
+                environment[f"HATCH_RS_LIBRARY_{key}_DIR"] = str(self._bundled_library_dir(link, resolved_target))
         return environment
 
     def _library_rustc_args(self, artifact: RustArtifactConfig, resolved_target: ResolvedTarget) -> list[str]:
@@ -1263,8 +1277,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 args.extend(("-C", f"link-arg=-Wl,-soname,{shared_library}"))
         if mode in ("static", "direct"):
             return args
+        origin = "$ORIGIN" if platform == "linux" else "@loader_path"
         for link in artifact.links:
-            if mode == "bundled":
+            external = self._external_libraries.get(link)
+            if external is None:
                 library_dir = self._bundled_library_dir(link, resolved_target)
                 link_name = f"{link}.dll" if platform == "win32" else link
                 args.extend(("-L", f"native={library_dir}", "-l", f"dylib={link_name}"))
@@ -1273,12 +1289,14 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                         self._destination_directory(self._artifact_by_name(link), resolved_target),
                         self._destination_directory(artifact, resolved_target),
                     )
-                    origin = "$ORIGIN" if platform == "linux" else "@loader_path"
                     rpath = origin if relative == "." else f"{origin}/{Path(relative).as_posix()}"
                     args.extend(("-C", f"link-arg=-Wl,-rpath,{rpath}"))
             else:
-                external = self._external_libraries[link]
                 args.extend(("-L", f"native={external.library_dir}", "-l", f"dylib={external.link_name}"))
+                if external.package is not None and platform in ("linux", "darwin"):
+                    # both packages sit in one site-packages, so the rpath walks from the extension to the sibling package
+                    relative = relpath(Path(*external.package.split(".")) / "lib", self._destination_directory(artifact, resolved_target))
+                    args.extend(("-C", f"link-arg=-Wl,-rpath,{origin}/{Path(relative).as_posix()}"))
         return args
 
     def _pkg_config_variable(self, artifact: RustArtifactConfig, variable: str) -> Path:
@@ -1298,8 +1316,15 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         name = self._artifact_name(artifact)
         label = self._artifact_label(artifact)
         root = environ.get("HATCH_RS_LIBRARY_ROOT") or (str(artifact.library_root) if artifact.library_root is not None else None)
+        package = artifact.python_package if self._resolved_library_source == "bundled" else None
         if root:
             prefix = _resolve_path(root, base=Path(self.path))
+            library_dir, include_dir = prefix / "lib", prefix / "include"
+        elif package:
+            spec = find_spec(package)
+            if spec is None or not spec.submodule_search_locations:
+                raise ValueError(f"Artifact '{label}' package '{package}' is not installed in the build environment.")
+            prefix = Path(next(iter(spec.submodule_search_locations)))
             library_dir, include_dir = prefix / "lib", prefix / "include"
         elif artifact.pkg_config:
             library_dir = self._pkg_config_variable(artifact, "libdir")
@@ -1333,6 +1358,7 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
             library_dir=library_dir,
             include_dir=include_dir if include_dir.is_dir() else None,
             link_name=link_name,
+            package=package,
         )
 
     def _plan_external_library(self, artifact: RustArtifactConfig, *, global_target: str | None) -> PlannedArtifact:
