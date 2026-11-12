@@ -6,7 +6,7 @@ from sys import platform
 
 # The producer package adds its lib/ directory to the DLL search path on Windows and,
 # elsewhere, loads the library this extension links by its SONAME or install name.
-import c_abi_bundle_project
+import c_abi_bundle_project  # ty: ignore[import-not-found]
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _EXTENSION_SUFFIX = ".pyd" if platform == "win32" else ".so"
