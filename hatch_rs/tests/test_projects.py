@@ -3,7 +3,7 @@ from json import loads
 from os import environ, listdir, pathsep
 from os.path import dirname
 from pathlib import Path
-from shutil import copy2, rmtree, which
+from shutil import copy2, copytree, rmtree, which
 from subprocess import PIPE, STDOUT, check_call, run
 from sys import executable, modules, path, platform, version_info
 from zipfile import ZipFile
@@ -336,6 +336,42 @@ class TestProject:
         else:
             env["DYLD_LIBRARY_PATH" if platform == "darwin" else "LD_LIBRARY_PATH"] = str(prefix / "lib")
             _assert_c_abi_answers(env, shared=False)
+
+    def test_python_extension_links_library_from_installed_package(self, tmp_path):
+        """A second package links the library the first one ships, as fsspec-kafka does with fsspec-rs."""
+        consumer_root = Path("hatch_rs/tests") / "test_project_python_extension_package_library"
+        consumer_package = consumer_root / "package_link_project"
+        rmtree(consumer_root / "dist", ignore_errors=True)
+        rmtree(consumer_package / "lib", ignore_errors=True)
+        for artifact in consumer_package.glob("package_link_extension*"):
+            artifact.unlink()
+        _clean_c_abi_project()
+        check_call([executable, "-m", "hatchling", "build", "--hooks-only"], cwd=C_ABI_PROJECT, env=_subprocess_env())
+
+        # the producer is importable in the build environment, as an installed build dependency would be
+        env = _subprocess_env()
+        env["PYTHONPATH"] = f"{C_ABI_PROJECT.resolve()}{pathsep}{env['PYTHONPATH']}"
+        check_call([executable, "-m", "hatchling", "build", "--hooks-only"], cwd=consumer_root, env=env)
+
+        extension_name = "package_link_extension.pyd" if platform == "win32" else "package_link_extension.so"
+        assert (consumer_package / extension_name).exists()
+        assert list((consumer_package / "lib").iterdir()) == [consumer_package / "lib" / "hatch-rs-artifacts.json"]
+        records = loads((consumer_package / "lib" / "hatch-rs-artifacts.json").read_text())["artifacts"]
+        library = [record for record in records if record["name"] == "c_abi_library"]
+        assert [record["role"] for record in library] == ["external-library"]
+        assert Path(library[0]["source"]).is_relative_to(C_ABI_PACKAGE.resolve())
+        assert "c_abi_library_answer" not in exported_symbols(consumer_package / extension_name)
+
+        # install both packages side by side and call through to the producer's library
+        site = tmp_path / "site"
+        copytree(C_ABI_PACKAGE, site / "c_abi_bundle_project")
+        copytree(consumer_package, site / "package_link_project")
+        env["PYTHONPATH"] = str(site)
+        check_call([executable, "-c", "import package_link_project as m; assert m.library_answer() == 7"], cwd=tmp_path, env=env)
+        if platform != "win32":
+            # the rpath alone finds the sibling package's library, without the producer being imported first
+            code = f"from ctypes import CDLL; assert CDLL({str(site / 'package_link_project' / extension_name)!r}).package_link_extension_library_answer() == 7"
+            check_call([executable, "-c", code], cwd=tmp_path, env=env)
 
     def test_python_extension_compiles_c_abi_library_in_direct_mode(self):
         _clean_c_abi_project()

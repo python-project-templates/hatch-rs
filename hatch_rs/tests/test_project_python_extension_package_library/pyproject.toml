@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.20"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hatch-rs-test-project-python-extension-package-library"
+description = "Python extension linking a C ABI library shipped by another installed package"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "hatchling>=1.20",
+    "hatch-rs",
+]
+
+[tool.hatch.build]
+artifacts = [
+    "package_link_project/*.dll",
+    "package_link_project/*.dylib",
+    "package_link_project/*.pyd",
+    "package_link_project/*.so",
+    "package_link_project/lib/*.json",
+]
+
+[tool.hatch.build.sources]
+src = "/"
+
+[tool.hatch.build.targets.sdist]
+packages = ["package_link_project"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["package_link_project"]
+
+[tool.hatch.build.hooks.hatch-rs]
+verbose = true
+path = "."
+module = "package_link_project"
+target-dir = "isolated"
+artifact-manifest = true
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "c_abi_library"
+python-package = "c_abi_bundle_project"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "package_link_extension"
+manifest = "Cargo.toml"
+destination = "package_link_project/{python_extension_name}"
+links = ["c_abi_library"]
+
+[tool.hatch.build.hooks.hatch-rs.artifacts.library-source-features]
+bundled = ["capi"]
+external = ["capi"]
+static = ["direct"]
+direct = ["direct"]

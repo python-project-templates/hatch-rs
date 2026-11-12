@@ -265,6 +265,27 @@ library. Header, symbol, and validation-command checks still run against the
 external file, and the artifact manifest records it with role
 `external-library`.
 
+A library that another installed wheel ships is declared with `python-package`
+instead of `manifest`: hatch-rs locates that package in the build environment
+(so the producer must be a build dependency) and takes the library from its
+`lib/` and the headers from its `include/`. In `bundled` mode the extension
+gets an rpath to the sibling package (`$ORIGIN/../fsspec_rs/lib` below), on
+the assumption that both wheels install into one site-packages; on Windows
+the consumer package imports the producer first so its `lib/` is on the DLL
+search path. In `external` mode the package is ignored and the library is
+resolved as above, which is what a conda recipe wants.
+
+```toml
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "fsspec"
+python-package = "fsspec_rs"
+
+[[tool.hatch.build.hooks.hatch-rs.artifacts]]
+name = "fsspec_kafka"
+destination = "fsspec_kafka/{python_extension_name}"
+links = ["fsspec"]
+```
+
 ### ABI validation and artifact metadata
 
 `cdylib` artifacts can validate the copied C ABI library before the wheel is

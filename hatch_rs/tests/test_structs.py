@@ -1135,6 +1135,101 @@ def test_build_plan_external_mode_missing_library_fails_clearly(tmp_path, monkey
         _linked_plan(tmp_path, "x86_64-unknown-linux-gnu").generate()
 
 
+def _package_plan(tmp_path, monkeypatch, target):
+    site = tmp_path / "site"
+    (site / "ffi_package" / "lib").mkdir(parents=True)
+    (site / "ffi_package" / "include").mkdir()
+    (site / "ffi_package" / "__init__.py").write_text("")
+    (site / "ffi_package" / "lib" / "libproject_ffi.so").write_bytes(b"")
+    (site / "ffi_package" / "lib" / "libproject_ffi.dylib").write_bytes(b"")
+    (site / "ffi_package" / "lib" / "project_ffi.dll").write_bytes(b"")
+    monkeypatch.syspath_prepend(str(site))
+    return HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target=target,
+        artifacts=[
+            {"name": "project_ffi", "python-package": "ffi_package"},
+            {
+                "name": "project_py",
+                "destination": "project/{python_extension_name}",
+                "links": ["project_ffi"],
+                "library-source-features": {"bundled": ["capi"], "external": ["capi"], "direct": ["direct"]},
+            },
+        ],
+    )
+
+
+def test_build_plan_links_library_from_installed_package(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    plan = _package_plan(tmp_path, monkeypatch, "x86_64-unknown-linux-gnu")
+    (extension,) = plan.generate()
+
+    library_dir = tmp_path / "site" / "ffi_package" / "lib"
+    assert plan._artifact_plans[0].invocation is None
+    assert plan._artifact_plans[0].external_library.library == library_dir / "libproject_ffi.so"
+    assert "--features capi --no-default-features" in extension
+    args = plan._artifact_plans[1].invocation.args
+    assert f"native={library_dir}" in args
+    assert "dylib=project_ffi" in args
+    assert "link-arg=-Wl,-rpath,$ORIGIN/../ffi_package/lib" in args
+    env = plan._artifact_plans[1].invocation.env
+    assert env["HATCH_RS_LIBRARY_PROJECT_FFI_DIR"] == str(library_dir)
+    assert env["HATCH_RS_LIBRARY_PROJECT_FFI_INCLUDE_DIR"] == str(library_dir.parent / "include")
+
+
+def test_build_plan_package_library_rpath_on_darwin(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    (extension,) = _package_plan(tmp_path, monkeypatch, "aarch64-apple-darwin").generate()
+
+    assert "-C link-arg=-Wl,-rpath,@loader_path/../ffi_package/lib" in extension
+
+
+def test_build_plan_package_library_external_mode_ignores_package(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "external")
+    prefix = tmp_path / "prefix"
+    (prefix / "lib").mkdir(parents=True)
+    (prefix / "lib" / "libproject_ffi.so").write_bytes(b"")
+    monkeypatch.setenv("HATCH_RS_LIBRARY_ROOT", str(prefix))
+    plan = _package_plan(tmp_path, monkeypatch, "x86_64-unknown-linux-gnu")
+    (extension,) = plan.generate()
+
+    assert plan._artifact_plans[0].external_library.library == prefix / "lib" / "libproject_ffi.so"
+    assert "rpath" not in extension
+
+
+def test_build_plan_package_library_direct_mode_skips_library(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "direct")
+    (extension,) = _package_plan(tmp_path, monkeypatch, "x86_64-unknown-linux-gnu").generate()
+
+    assert "--features direct --no-default-features" in extension
+    assert "-l dylib" not in extension
+
+
+def test_build_plan_package_library_missing_package_fails_clearly(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HATCH_RS_LIBRARY_SOURCE", raising=False)
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        artifacts=[{"name": "project_ffi", "python-package": "no_such_package_for_hatch_rs"}],
+    )
+    with pytest.raises(ValueError, match="not installed"):
+        plan.generate()
+
+
+def test_artifact_python_package_requires_name_without_manifest():
+    with pytest.raises(ValueError, match="python-package"):
+        RustArtifactConfig(**{"python-package": "ffi_package"})
+    with pytest.raises(ValueError, match="python-package"):
+        RustArtifactConfig(**{"name": "project_ffi", "python-package": "ffi_package", "manifest": "rust/Cargo.toml"})
+
+
 def test_build_plan_rejects_unknown_library_source(tmp_path, monkeypatch):
     monkeypatch.setenv("HATCH_RS_LIBRARY_SOURCE", "vendored")
     with pytest.raises(ValueError, match="HATCH_RS_LIBRARY_SOURCE"):

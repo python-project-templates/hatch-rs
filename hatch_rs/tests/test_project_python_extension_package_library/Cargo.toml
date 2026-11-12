@@ -1,0 +1,21 @@
+[package]
+name = "package_link_extension_py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "package_link_extension"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+c_abi_library = { path = "../test_project_python_extension_c_abi_library/rust", optional = true }
+
+[features]
+default = ["capi"]
+capi = []
+direct = ["dep:c_abi_library"]
+
+[profile.release]
+panic = "abort"
