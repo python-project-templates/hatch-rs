@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from glob import glob
 from importlib.util import find_spec
 from json import dumps, loads
+from logging import getLogger
 from os import environ
 from os.path import relpath
 from pathlib import Path
@@ -23,6 +24,8 @@ from packaging.tags import cpython_tags, mac_platforms, platform_tags
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from .symbols import exported_symbols
+
+_logger = getLogger(__name__)
 
 __all__ = (
     "CargoInvocation",
@@ -2108,8 +2111,9 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                 command.append("--check-previous")
             try:
                 completed = run(command, cwd=manifest.parent, env=environment, check=False)
-            except FileNotFoundError as error:
-                raise RuntimeError(f"Artifact '{label}' license collection requires cargo-bundle-licenses. Install it before building.") from error
+            except FileNotFoundError:
+                _logger.warning("Artifact '%s' is built without a license bundle because cargo-bundle-licenses is not installed.", label)
+                return
             if completed.returncode != 0:
                 raise RuntimeError(f"Artifact '{label}' license collection failed with exit code {completed.returncode}: {shell_join(command)}")
 

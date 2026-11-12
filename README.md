@@ -51,7 +51,10 @@ Destination templates support `{module}`, `{target}`, `{profile}`, `{name}`,
 
 Configure the `licenses` table to collect dependency license texts with
 [cargo-bundle-licenses](https://github.com/sstadick/cargo-bundle-licenses).
-Install the collector before building; hatch-rs does not install Cargo tools:
+Install the collector where you build wheels for release; hatch-rs does not install
+Cargo tools. When it is not installed, hatch-rs logs a warning and builds the artifact
+without a license bundle, so source installs from an sdist do not need it. Once the
+collector runs, missing license texts and collector errors still fail the build.
 
 ```sh
 cargo install cargo-bundle-licenses --version 4.2.0 --locked

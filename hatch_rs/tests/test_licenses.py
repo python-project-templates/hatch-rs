@@ -210,15 +210,32 @@ def test_missing_license_text_fails_the_build(tmp_path, cargo_runner, monkeypatc
     assert not (tmp_path / "project/licenses/cargo.json").exists()
 
 
-@pytest.mark.parametrize("failure", ["missing-tool", "command-failed", "missing-output", "invalid-json"])
+def test_missing_collector_warns_and_skips_the_bundle(tmp_path, cargo_runner, monkeypatch, caplog):
+    original_run = structs.run
+
+    def missing_collector(args, **kwargs):
+        if args[0] == "cargo-bundle-licenses":
+            raise FileNotFoundError("cargo-bundle-licenses")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr("hatch_rs.structs.run", missing_collector)
+    plan = make_plan(tmp_path, licenses={})
+
+    try:
+        plan.execute()
+    finally:
+        plan.cleanup()
+    assert "cargo-bundle-licenses is not installed" in caplog.text
+    assert not (tmp_path / "project/licenses/cargo.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["command-failed", "missing-output", "invalid-json"])
 def test_collector_failures_are_not_silently_packaged(tmp_path, cargo_runner, monkeypatch, failure):
     original_run = structs.run
 
     def failing_run(args, **kwargs):
         if args[0] != "cargo-bundle-licenses":
             return original_run(args, **kwargs)
-        if failure == "missing-tool":
-            raise FileNotFoundError("cargo-bundle-licenses")
         if failure == "invalid-json":
             Path(args[args.index("--output") + 1]).write_text("not JSON")
         return CompletedProcess(args, 1 if failure == "command-failed" else 0)
