@@ -984,6 +984,25 @@ def test_build_plan_copies_windows_import_library_from_deps(tmp_path):
     assert plan.libraries == ["project/lib/project_ffi.dll"]
 
 
+def test_build_plan_copies_python_extension_from_cargo_build_dir(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-unknown-linux-gnu",
+        abi3=True,
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    output_path = tmp_path / "target" / "x86_64-unknown-linux-gnu" / "release" / "build" / "project" / "1234567890abcdef" / "out"
+    output_path.mkdir(parents=True)
+    (output_path / "libproject-1234567890abcdef.so").write_bytes(b"extension")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    assert (tmp_path / "project" / "project.abi3.so").read_bytes() == b"extension"
+    assert plan.libraries == ["project/project.abi3.so"]
+
+
 def test_build_plan_copies_hashed_outputs_from_cargo_build_dir(tmp_path):
     plan = HatchRustBuildPlan(
         module="project",
