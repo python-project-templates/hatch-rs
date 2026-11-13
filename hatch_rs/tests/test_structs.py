@@ -984,6 +984,33 @@ def test_build_plan_copies_windows_import_library_from_deps(tmp_path):
     assert plan.libraries == ["project/lib/project_ffi.dll"]
 
 
+def test_build_plan_copies_hashed_outputs_from_cargo_build_dir(tmp_path):
+    plan = HatchRustBuildPlan(
+        module="project",
+        path=tmp_path,
+        target="x86_64-pc-windows-msvc",
+        artifacts=[
+            {
+                "name": "project_ffi",
+                "destination": "{module}/lib/{shared_library}",
+                "include-import-lib": True,
+            }
+        ],
+    )
+    plan.generate()
+    planned_artifact = plan._artifact_plans[0]
+    output_path = tmp_path / "target" / "x86_64-pc-windows-msvc" / "release" / "build" / "project_ffi" / "1234567890abcdef" / "out"
+    output_path.mkdir(parents=True)
+    (output_path / "project_ffi-1234567890abcdef.dll").write_bytes(b"shared library")
+    (output_path / "project_ffi-1234567890abcdef.dll.lib").write_bytes(b"import library")
+
+    plan._copy_outputs(planned_artifact, build_root=tmp_path)
+
+    assert (tmp_path / "project" / "lib" / "project_ffi.dll").read_bytes() == b"shared library"
+    assert (tmp_path / "project" / "lib" / "project_ffi.dll.lib").read_bytes() == b"import library"
+    assert plan.libraries == ["project/lib/project_ffi.dll"]
+
+
 def test_build_plan_writes_artifact_manifest(tmp_path):
     plan = HatchRustBuildPlan(
         module="project",
