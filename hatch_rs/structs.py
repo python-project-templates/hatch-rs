@@ -447,9 +447,14 @@ def _artifact_patterns(platform: str) -> tuple[str, ...]:
 
 def _cargo_artifact_stem(path: Path) -> str:
     stem = path.stem
-    if path.parent.name == "deps":
+    if path.parent.name in ("deps", "out"):
         stem = sub(r"-[0-9a-f]{16}$", "", stem)
     return stem
+
+
+def _cargo_intermediate_dirs(target_path: Path) -> list[Path]:
+    # Cargo before 1.100 writes hashed outputs to deps/; Cargo 1.100 writes them to build/<package>/<hash>/out/.
+    return [directory for directory in (target_path / "deps", *sorted(target_path.glob("build/*/*/out"))) if directory.is_dir()]
 
 
 def header_symbols(text: str, prefix: str) -> list[str]:
@@ -596,7 +601,7 @@ class RustArtifactConfig(BaseModel):
         description="How to include the compiled artifact: package, shared-data, or shared-scripts (executables on PATH).",
     )
     destination: str | None = Field(default=None, description="Wheel-relative destination template for the copied artifact.")
-    search_deps: bool = Field(default=False, alias="search-deps", description="Search target/<triple>/<profile>/deps even if a root artifact exists.")
+    search_deps: bool = Field(default=False, alias="search-deps", description="Search Cargo's hashed outputs even if a root artifact exists.")
     features: list[str] | None = Field(default=None, description="Cargo features to enable for this artifact.")
     all_features: bool | None = Field(default=None, alias="all-features", description="Enable all Cargo features for this artifact.")
     no_default_features: bool | None = Field(
@@ -1410,9 +1415,10 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         files = []
         for pattern in _artifact_patterns(platform):
             files.extend(target_path.glob(pattern))
-        if not files and (target_path / "deps").is_dir():
-            for pattern in _artifact_patterns(platform):
-                files.extend((target_path / "deps").glob(pattern))
+        if not files:
+            for directory in _cargo_intermediate_dirs(target_path):
+                for pattern in _artifact_patterns(platform):
+                    files.extend(directory.glob(pattern))
         return [file for file in files if file.is_file()]
 
     def _find_exact_artifact(self, target_path: Path, expected_name: str, *, search_deps: bool, artifact: RustArtifactConfig) -> Path:
@@ -1423,11 +1429,11 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
         if root_candidate.is_file():
             candidates.append(root_candidate)
 
-        deps_dir = target_path / "deps"
-        if deps_dir.is_dir() and (search_deps or not candidates):
-            for candidate in deps_dir.glob(f"*{expected_path.suffix}"):
-                if candidate.is_file() and candidate.suffix == expected_path.suffix and _cargo_artifact_stem(candidate) == expected_path.stem:
-                    candidates.append(candidate)
+        if search_deps or not candidates:
+            for directory in _cargo_intermediate_dirs(target_path):
+                for candidate in directory.glob(f"*{expected_path.suffix}"):
+                    if candidate.is_file() and candidate.suffix == expected_path.suffix and _cargo_artifact_stem(candidate) == expected_path.stem:
+                        candidates.append(candidate)
 
         if not candidates:
             raise FileNotFoundError(
@@ -1626,17 +1632,19 @@ class HatchRustBuildPlan(HatchRustBuildConfig):
                     if candidate.is_file():
                         append_candidate(candidate, import_library)
 
-        deps_dir = target_path / "deps"
-        if deps_dir.is_dir() and (artifact.search_deps or not candidates):
-            for candidate_name in candidate_names:
-                candidate = deps_dir / candidate_name
-                if candidate.is_file():
-                    append_candidate(candidate, candidate_name)
+        if artifact.search_deps or not candidates:
+            intermediate_dirs = _cargo_intermediate_dirs(target_path)
+            for directory in intermediate_dirs:
+                for candidate_name in candidate_names:
+                    candidate = directory / candidate_name
+                    if candidate.is_file():
+                        append_candidate(candidate, candidate_name)
             if not candidates:
-                for pattern, import_library in self._import_library_patterns(artifact):
-                    for candidate in deps_dir.glob(pattern):
-                        if candidate.is_file():
-                            append_candidate(candidate, import_library)
+                for directory in intermediate_dirs:
+                    for pattern, import_library in self._import_library_patterns(artifact):
+                        for candidate in directory.glob(pattern):
+                            if candidate.is_file():
+                                append_candidate(candidate, import_library)
 
         if not candidates:
             expected_names = ", ".join(candidate_names)
