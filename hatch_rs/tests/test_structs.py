@@ -897,7 +897,7 @@ def _plan_with_header(tmp_path, header_text, **artifact):
 
 
 def test_build_plan_expects_every_header_symbol(tmp_path, monkeypatch):
-    monkeypatch.setattr("hatch_rs.structs.exported_symbols", lambda path: {"project_ffi_answer", "project_ffi_free"})
+    monkeypatch.setattr("hatch_native.validation.exported_symbols", lambda path: {"project_ffi_answer", "project_ffi_free"})
     plan = _plan_with_header(
         tmp_path,
         "int project_ffi_answer(void);\nvoid project_ffi_free(void *p);\n",
@@ -907,7 +907,7 @@ def test_build_plan_expects_every_header_symbol(tmp_path, monkeypatch):
 
 
 def test_build_plan_missing_header_symbol_fails_clearly(tmp_path, monkeypatch):
-    monkeypatch.setattr("hatch_rs.structs.exported_symbols", lambda path: {"project_ffi_answer"})
+    monkeypatch.setattr("hatch_native.validation.exported_symbols", lambda path: {"project_ffi_answer"})
     plan = _plan_with_header(
         tmp_path,
         "int project_ffi_answer(void);\nvoid project_ffi_free(void *p);\n",
@@ -918,7 +918,7 @@ def test_build_plan_missing_header_symbol_fails_clearly(tmp_path, monkeypatch):
 
 
 def test_build_plan_header_without_prefixed_symbols_fails_clearly(tmp_path, monkeypatch):
-    monkeypatch.setattr("hatch_rs.structs.exported_symbols", lambda path: set())
+    monkeypatch.setattr("hatch_native.validation.exported_symbols", lambda path: set())
     plan = _plan_with_header(tmp_path, "int other_answer(void);\n", **{"header-symbol-prefix": "project_ffi_"})
     with pytest.raises(RuntimeError, match="no functions starting with 'project_ffi_'"):
         plan._copy_outputs(plan._artifact_plans[0], build_root=tmp_path)
